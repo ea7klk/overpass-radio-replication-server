@@ -20,6 +20,7 @@ from radio_overpass.replicator import (
     light_green_console,
     red_console,
     RemoteRefresh,
+    OverpassRootNotFoundError,
 )
 
 
@@ -185,6 +186,35 @@ class QuickCheckTest(unittest.TestCase):
         self.assertIn("(._;<<;);", query)
         self.assertIn(b"<way id=\"9\"", remote_xml)
 
+    def test_public_overpass_missing_root_is_terminal_without_retry(self):
+        class Response(BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+        response = Response(b'<osm version="0.6"></osm>')
+        config = {
+            "overpass_query_url": "https://overpass.example/api/interpreter",
+            "overpass_query_timeout": 30,
+            "overpass_query_retries": 3,
+            "retry_initial_seconds": 1,
+            "retry_max_seconds": 1,
+            "tag_key_prefix": "communication:amateur_radio",
+        }
+        with patch(
+            "radio_overpass.replicator.urllib.request.urlopen",
+            return_value=response,
+        ) as urlopen:
+            with tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(OverpassRootNotFoundError):
+                    query_overpass(config, "node:404", set(), Path(directory) / "remote.osc")
+
+        self.assertEqual(urlopen.call_count, 1)
+
     def test_startup_membership_is_removed_after_successful_processing(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -234,6 +264,40 @@ class QuickCheckTest(unittest.TestCase):
                 process_pending_membership(config)
 
             self.assertEqual(json.loads(pending.read_text()), ["node:1"])
+
+    def test_missing_startup_membership_root_is_removed_and_next_is_processed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pending = root / "membership.json"
+            catalog = root / "catalog.json"
+            pending.write_text(json.dumps(["node:404", "node:1"]), encoding="utf-8")
+            config = {
+                "membership_file": str(pending),
+                "catalog_file": str(catalog),
+                "work_dir": str(root / "work"),
+            }
+            refresh = RemoteRefresh(
+                root / "remote.osc",
+                {"node:1": b'<node id="1" lat="40" lon="-3"/>'},
+                {"node:1": set()},
+                {},
+                {},
+                0.1,
+            )
+            with (
+                patch(
+                    "radio_overpass.replicator.refresh_root",
+                    side_effect=[OverpassRootNotFoundError("node:404"), (refresh, {})],
+                ) as refresh_root_mock,
+                patch("radio_overpass.replicator.update_database"),
+            ):
+                process_pending_membership(config)
+
+            self.assertFalse(pending.exists())
+            self.assertEqual(
+                [call.args[1] for call in refresh_root_mock.call_args_list],
+                ["node:404", "node:1"],
+            )
 
     def test_initial_database_requires_a_clean_directory(self):
         with tempfile.TemporaryDirectory() as directory:

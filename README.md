@@ -134,6 +134,12 @@ must have a successful HTTP status, valid OSM XML, no Overpass
 retries unsuccessful queries and does not advance the replication checkpoint
 until the local update succeeds.
 
+If the response is valid and successful but omits the requested root, the
+replicator treats that entity as deleted. For startup entries in
+`membership_file`, it removes that one entry and continues with the next
+queued root; it does not retry that terminal not-found result. Other query
+failures remain queued for retry.
+
 When a change file introduces a new dependency, the source `.osc.gz` is
 re-read locally with the newly discovered IDs seeded into the filter. This
 handles references that occur earlier in the same change file without
@@ -320,7 +326,9 @@ partial database explicitly while the dispatcher is stopped. The first
 successful public Overpass result then uses `update_database`; later results
 use `update_from_dir`. This is why both Overpass binaries are required. A
 startup membership entry is acknowledged only after the corresponding database
-write has completed successfully.
+write has completed successfully, except for a successful response proving
+that the requested root no longer exists, which is removed from the queue
+without a database write.
 
 The two-phase bootstrap settings are intended for a new empty database. If a
 checkpoint already exists, the persisted `phase` controls resumption and

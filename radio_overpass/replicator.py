@@ -34,6 +34,10 @@ OBJECT_TYPES = {"node", "way", "relation"}
 ROOT_KEY = re.compile(r"^(node|way|relation):([1-9][0-9]*)$")
 
 
+class OverpassRootNotFoundError(RuntimeError):
+    """The public API answered successfully but did not return the root."""
+
+
 @dataclass
 class DownloadedChange:
     path: Path
@@ -266,9 +270,17 @@ def query_overpass(
             if remarks:
                 last_error = RuntimeError("; ".join(remarks))
             elif missing:
-                last_error = RuntimeError(
+                last_error = OverpassRootNotFoundError(
                     f"Overpass response omitted requested root: {root_key}"
                 )
+                LOG.warning(
+                    "%s",
+                    red_console(
+                        f"Overpass response omitted requested root {root_key}; "
+                        "assuming the entity no longer exists"
+                    ),
+                )
+                break
             else:
                 remote_osc(output_path, objects, known_keys)
                 osm_path = output_path.with_suffix(".osm")
@@ -295,6 +307,8 @@ def query_overpass(
             time.sleep(retry_wait)
             retry_wait = min(max_wait, max(retry_wait * 2, 1))
 
+    if isinstance(last_error, OverpassRootNotFoundError):
+        raise last_error
     message = f"Overpass query unsuccessful after {retries + 1} attempt(s): {last_error}"
     LOG.error("%s", red_console(message))
     raise RuntimeError(message)
@@ -420,14 +434,25 @@ def process_pending_membership(config: dict[str, Any]) -> None:
         temp_dir = Path(directory)
         while pending:
             root_key = pending[0]
-            refresh, catalog = refresh_root(
-                config,
-                root_key,
-                catalog,
-                temp_dir,
-                timestamp,
-                "startup membership",
-            )
+            try:
+                refresh, catalog = refresh_root(
+                    config,
+                    root_key,
+                    catalog,
+                    temp_dir,
+                    timestamp,
+                    "startup membership",
+                )
+            except OverpassRootNotFoundError:
+                # A successful empty result is terminal: remove only this
+                # queue entry and continue. Network, HTTP, XML, and database
+                # failures still propagate and preserve the current entry.
+                pending = pending[1:]
+                if pending:
+                    atomic_json(pending_path, pending)
+                else:
+                    pending_path.unlink(missing_ok=True)
+                continue
             del refresh
             pending = pending[1:]
             if pending:
