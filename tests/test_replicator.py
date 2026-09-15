@@ -243,6 +243,7 @@ class QuickCheckTest(unittest.TestCase):
                 "membership_file": str(root / "membership.json"),
                 "catalog_file": str(catalog),
                 "catalog_query_workers": 2,
+                "catalog_query_interval_seconds": 1,
                 "tag_key_prefix": "communication:amateur_radio",
                 "retry_initial_seconds": 1,
                 "retry_max_seconds": 1,
@@ -267,9 +268,13 @@ class QuickCheckTest(unittest.TestCase):
                 pool = CatalogQueryPool(config, root / "query-work")
                 pool.start()
                 self.assertEqual(set(pool.futures), {"node:10", "node:11"})
+                pool.drain_ready(wait=True)
+                time.sleep(1.05)
+                pool.drain_ready()
                 pool.close()
 
             self.assertEqual(set(queried), {"node:10", "node:11"})
+            self.assertEqual(len(queried), 4)
 
     def test_public_overpass_query_returns_root_dependencies_and_dependents(self):
         class Response(BytesIO):

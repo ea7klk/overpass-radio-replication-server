@@ -147,11 +147,13 @@ downloading later files while filtering, querying, and applying the current
 file.
 
 At process startup, roots already recorded in `catalog_file` are submitted to a
-separate background query lane using `catalog_query_workers` (default `4`).
-Those public requests run while the normal replication files are downloaded,
-quick-checked, filtered, and applied. Completed catalog results are written by
-the ordered database path; a catalog-query failure is logged and leaves its
-root in the catalog for retry on the next startup.
+continuous background query lane using `catalog_query_workers` (default `4`).
+The catalog is reread for new roots, and completed roots are resubmitted after
+`catalog_query_interval_seconds` (default `3600`). Those public requests run
+while the normal replication files are downloaded, quick-checked, filtered,
+and applied. Completed catalog results are written by the ordered database
+path; a catalog-query failure is logged and retried without stopping
+replication.
 
 When a change file introduces a new dependency, the source `.osc.gz` is
 re-read locally with the newly discovered IDs seeded into the filter. This

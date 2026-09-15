@@ -1121,31 +1121,47 @@ class Prefetcher:
 
 
 class CatalogQueryPool:
-    """Query catalog roots in the background while replication catches up."""
+    """Continuously query catalog roots while replication catches up."""
 
     def __init__(self, config: dict[str, Any], directory: Path) -> None:
         self.config = config
         self.directory = directory
+        self.interval_seconds = max(
+            1,
+            int(config.get("catalog_query_interval_seconds", 3600)),
+        )
         self.executor = ThreadPoolExecutor(
             max_workers=max(1, int(config.get("catalog_query_workers", 4)))
         )
         self.futures: dict[str, Future[RemoteRefresh]] = {}
+        self.roots: set[str] = set()
+        self.next_due: dict[str, float] = {}
 
-    def start(self) -> None:
+    def _refresh_catalog_roots(self) -> None:
         catalog = load_json(catalog_path(self.config), {})
         if not isinstance(catalog, dict):
             return
-        roots = sorted({str(root) for root in catalog.get("roots", [])})
-        if not roots:
+        roots = {str(root) for root in catalog.get("roots", [])}
+        now = time.monotonic()
+        for root_key in roots - self.roots:
+            self.next_due[root_key] = now
+        for root_key in self.roots - roots:
+            self.next_due.pop(root_key, None)
+        self.roots = roots
+
+    def _schedule_due(self) -> None:
+        if not self.roots:
+            return
+        catalog = load_json(catalog_path(self.config), {})
+        if not isinstance(catalog, dict):
             return
         known_keys = set(catalog.get("roots", [])) | set(catalog.get("dependencies", []))
         self.directory.mkdir(parents=True, exist_ok=True)
-        LOG.info(
-            "starting background catalog query lane for %d root(s); "
-            "replication downloads and filtering continue concurrently",
-            len(roots),
-        )
-        for root_key in roots:
+        now = time.monotonic()
+        scheduled = 0
+        for root_key in sorted(self.roots):
+            if root_key in self.futures or self.next_due.get(root_key, now) > now:
+                continue
             kind, object_id = root_key_parts(root_key)
             root_directory = self.directory / f"{kind}-{object_id}"
             root_directory.mkdir(parents=True, exist_ok=True)
@@ -1156,9 +1172,24 @@ class CatalogQueryPool:
                 known_keys,
                 root_directory / "remote.osc",
             )
+            self.next_due[root_key] = now + self.interval_seconds
+            scheduled += 1
+        if scheduled:
+            LOG.info(
+                "scheduled %d catalog root query(ies); replication downloads and "
+                "filtering continue concurrently",
+                scheduled,
+            )
 
-    def drain_ready(self, *, wait: bool = False) -> None:
+    def start(self) -> None:
+        self._refresh_catalog_roots()
+        self._schedule_due()
+
+    def drain_ready(self, *, wait: bool = False, reschedule: bool = True) -> None:
         """Apply completed results in catalog order; never write from workers."""
+        if reschedule:
+            self._refresh_catalog_roots()
+            self._schedule_due()
         while self.futures:
             root_key, future = next(iter(self.futures.items()))
             if not wait and not future.done():
@@ -1180,6 +1211,11 @@ class CatalogQueryPool:
                         "continuing catalog query lane"
                     ),
                 )
+                if reschedule:
+                    self.next_due[root_key] = time.monotonic() + max(
+                        1,
+                        int(self.config.get("retry_initial_seconds", 15)),
+                    )
                 continue
             except Exception as exc:
                 # A transient catalog refresh must not stop the replication
@@ -1192,6 +1228,11 @@ class CatalogQueryPool:
                         "replication continues"
                     ),
                 )
+                if reschedule:
+                    self.next_due[root_key] = time.monotonic() + max(
+                        1,
+                        int(self.config.get("retry_initial_seconds", 15)),
+                    )
                 continue
 
             state = load_json(catalog_path(self.config), {})
@@ -1210,9 +1251,15 @@ class CatalogQueryPool:
                 datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "catalog background refresh",
             )
+            if reschedule:
+                self.next_due[root_key] = time.monotonic() + self.interval_seconds
+
+        if reschedule:
+            self._refresh_catalog_roots()
+            self._schedule_due()
 
     def close(self) -> None:
-        self.drain_ready(wait=True)
+        self.drain_ready(wait=True, reschedule=False)
         self.executor.shutdown(wait=True)
 
 

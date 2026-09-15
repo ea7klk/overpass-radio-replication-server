@@ -19,6 +19,7 @@
   "overpass_query_retries": 3,
   "overpass_query_workers": 4,
   "catalog_query_workers": 4,
+  "catalog_query_interval_seconds": 3600,
   "tag_key_prefix": "communication:amateur_radio",
   "meta_mode": "--meta=no"
 }
