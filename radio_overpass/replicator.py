@@ -347,7 +347,15 @@ def main() -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
-    config = json.loads(args.config.read_text(encoding="utf-8"))
+    try:
+        config = json.loads(args.config.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise SystemExit(f"configuration file not found: {args.config}")
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"invalid JSON in {args.config}: line {exc.lineno}, "
+            f"column {exc.colno}: {exc.msg}"
+        )
     run(config)
     return 0
 
