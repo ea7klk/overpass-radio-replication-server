@@ -43,7 +43,7 @@ def matches(element: ET.Element, prefix: str) -> bool:
 
 def xml_start(tag: str, attributes: dict[str, str]) -> bytes:
     attrs = "".join(f" {key}={quoteattr(value)}" for key, value in attributes.items())
-    return f"<{tag}>\n".encode("utf-8").replace(b">\n", (attrs + ">\n").encode("utf-8"))
+    return f"<{tag}{attrs}>\n".encode("utf-8")
 
 
 def main() -> int:
