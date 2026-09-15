@@ -169,18 +169,41 @@ def filter_stream(
     environment = os.environ.copy()
     package_root = str(Path(__file__).parent.parent)
     environment["PYTHONPATH"] = package_root + os.pathsep + environment.get("PYTHONPATH", "")
+    curl_command = [
+        "curl",
+        "--fail",
+        "--location",
+        "--silent",
+        "--show-error",
+        "--retry",
+        "3",
+        "--retry-delay",
+        "5",
+        "--connect-timeout",
+        "120",
+        change_url,
+    ]
     wait = int(config["retry_initial_seconds"])
     max_wait = int(config["retry_max_seconds"])
     while True:
+        curl_process: subprocess.Popen[bytes] | None = None
         try:
-            with urllib.request.urlopen(change_url, timeout=120) as raw:
+            curl_process = subprocess.Popen(curl_command, stdout=subprocess.PIPE)
+            assert curl_process.stdout is not None
+            with curl_process.stdout as raw:
                 with filtered_path.open("wb") as filtered:
                     subprocess.run(command, stdin=raw, stdout=filtered, check=True, env=environment)
+            curl_returncode = curl_process.wait()
+            if curl_returncode != 0:
+                raise subprocess.CalledProcessError(curl_returncode, curl_command)
             return
         except (OSError, urllib.error.HTTPError, subprocess.CalledProcessError) as exc:
             LOG.warning("streaming download/filter failed for %s: %s; retrying in %ss", change_url, exc, wait)
             filtered_path.unlink(missing_ok=True)
             delta_path.unlink(missing_ok=True)
+            if curl_process is not None and curl_process.poll() is None:
+                curl_process.kill()
+                curl_process.wait()
             time.sleep(wait)
             wait = min(max_wait, max(wait * 2, 1))
 
