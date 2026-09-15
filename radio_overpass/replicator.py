@@ -6,15 +6,18 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 import logging
 import os
+import re
 import sys
 import subprocess
 import tempfile
 import time
 import urllib.error
 import urllib.request
+from lxml import etree as ET
 from pathlib import Path
 from typing import Any
 from html.parser import HTMLParser
@@ -24,13 +27,27 @@ LOG = logging.getLogger("radio-overpass")
 PREFETCH_WINDOW = 10
 PREFETCH_WORKERS = 2
 ANSI_RED = "\033[91m"
+ANSI_LIGHT_GREEN = "\033[92m"
+ANSI_LIGHT_BLUE = "\033[94m"
 ANSI_RESET = "\033[0m"
+OBJECT_TYPES = {"node", "way", "relation"}
+ROOT_KEY = re.compile(r"^(node|way|relation):([1-9][0-9]*)$")
 
 
 @dataclass
 class DownloadedChange:
     path: Path
     state: dict[str, Any]
+    seconds: float
+
+
+@dataclass
+class RemoteRefresh:
+    path: Path
+    objects: dict[str, bytes]
+    refs: dict[str, set[str]]
+    names: dict[str, str]
+    tags: dict[str, list[dict[str, str]]]
     seconds: float
 
 
@@ -43,6 +60,26 @@ def red_console(text: str, *, is_tty: bool | None = None) -> str:
     if not is_tty and os.environ.get("FORCE_COLOR") != "1":
         return text
     return f"{ANSI_RED}{text}{ANSI_RESET}"
+
+
+def light_green_console(text: str, *, is_tty: bool | None = None) -> str:
+    if os.environ.get("NO_COLOR") is not None:
+        return text
+    if is_tty is None:
+        is_tty = sys.stderr.isatty()
+    if not is_tty and os.environ.get("FORCE_COLOR") != "1":
+        return text
+    return f"{ANSI_LIGHT_GREEN}{text}{ANSI_RESET}"
+
+
+def light_blue_console(text: str, *, is_tty: bool | None = None) -> str:
+    if os.environ.get("NO_COLOR") is not None:
+        return text
+    if is_tty is None:
+        is_tty = sys.stderr.isatty()
+    if not is_tty and os.environ.get("FORCE_COLOR") != "1":
+        return text
+    return f"{ANSI_LIGHT_BLUE}{text}{ANSI_RESET}"
 
 
 def object_log_message(
@@ -65,6 +102,328 @@ def object_log_message(
         if rendered_tags:
             message += " tags=" + ", ".join(rendered_tags)
     return message
+
+
+def catalog_path(config: dict[str, Any]) -> Path:
+    configured = config.get("catalog_file")
+    if configured:
+        return Path(configured)
+    return Path(config["membership_file"]).with_name("catalog.json")
+
+
+def root_key_parts(key: str) -> tuple[str, str]:
+    match = ROOT_KEY.fullmatch(key)
+    if match is None:
+        raise ValueError(f"invalid OSM object key: {key}")
+    return match.group(1), match.group(2)
+
+
+def element_key(element: ET._Element) -> str:
+    return f"{element.tag}:{element.get('id')}"
+
+
+def element_references(element: ET._Element) -> list[str]:
+    if element.tag == "way":
+        return [f"node:{child.get('ref')}" for child in element if child.tag == "nd"]
+    if element.tag == "relation":
+        return [
+            f"{child.get('type')}:{child.get('ref')}"
+            for child in element
+            if child.tag == "member" and child.get("type") in OBJECT_TYPES
+        ]
+    return []
+
+
+def overpass_query(root_keys: set[str], timeout: int) -> bytes:
+    grouped: dict[str, list[str]] = {kind: [] for kind in OBJECT_TYPES}
+    for key in sorted(root_keys):
+        kind, object_id = root_key_parts(key)
+        grouped[kind].append(object_id)
+    selectors = "\n".join(
+        f"  {kind}(id:{','.join(ids)});"
+        for kind, ids in grouped.items()
+        if ids
+    )
+    query = f"""[out:xml][timeout:{timeout}];
+(
+{selectors}
+);
+(._;>;);
+(._;<<;);
+out body;
+"""
+    return query.encode("utf-8")
+
+
+def element_name(element: ET._Element) -> str | None:
+    for child in element:
+        if child.tag == "tag" and child.get("k") == "name":
+            return child.get("v") or None
+    return None
+
+
+def element_matching_tags(element: ET._Element, prefix: str) -> list[dict[str, str]]:
+    return [
+        {"key": child.get("k", ""), "value": child.get("v", "")}
+        for child in element
+        if child.tag == "tag" and child.get("k", "").startswith(prefix)
+    ]
+
+
+def remote_osc(
+    output_path: Path,
+    objects: dict[str, bytes],
+    known_keys: set[str],
+) -> None:
+    groups: dict[str, list[bytes]] = {"create": [], "modify": []}
+    for key in sorted(objects):
+        groups["modify" if key in known_keys else "create"].append(objects[key])
+    with output_path.open("wb") as output:
+        output.write(b"<?xml version='1.0' encoding='UTF-8'?>\n")
+        output.write(b'<osmChange version="0.6" generator="radio-overpass">\n')
+        for group in ("create", "modify"):
+            output.write(f"<{group}>\n".encode("ascii"))
+            for object_xml in groups[group]:
+                output.write(object_xml)
+                output.write(b"\n")
+            output.write(f"</{group}>\n".encode("ascii"))
+        output.write(b"<delete>\n</delete>\n</osmChange>\n")
+
+
+def query_overpass(
+    config: dict[str, Any],
+    root_keys: set[str],
+    known_keys: set[str],
+    output_path: Path,
+) -> RemoteRefresh:
+    if not root_keys:
+        raise ValueError("at least one root is required for an Overpass query")
+    endpoint = config.get(
+        "overpass_query_url",
+        "https://overpass.private.coffee/api/interpreter",
+    )
+    timeout = int(config.get("overpass_query_timeout", 180))
+    retries = int(config.get("overpass_query_retries", 3))
+    retry_wait = int(config["retry_initial_seconds"])
+    max_wait = int(config["retry_max_seconds"])
+    query = overpass_query(root_keys, timeout)
+    last_error: Exception | None = None
+
+    for attempt in range(retries + 1):
+        started = time.monotonic()
+        objects: dict[str, bytes] = {}
+        refs: dict[str, set[str]] = {}
+        names: dict[str, str] = {}
+        tags: dict[str, list[dict[str, str]]] = {}
+        remarks: list[str] = []
+        try:
+            request = urllib.request.Request(
+                endpoint,
+                data=query,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+                    "User-Agent": "overpass-radio-replication-server/1.0",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=timeout + 30) as response:
+                status = getattr(response, "status", None)
+                if status is None:
+                    status = response.getcode()
+                if status < 200 or status >= 300:
+                    raise RuntimeError(f"Overpass HTTP status {status}")
+                for _, element in ET.iterparse(
+                    response,
+                    events=("end",),
+                    tag=("node", "way", "relation", "remark", "error"),
+                    huge_tree=True,
+                    resolve_entities=False,
+                    load_dtd=False,
+                    no_network=True,
+                ):
+                    if element.tag in {"remark", "error"}:
+                        text = " ".join("".join(element.itertext()).split())
+                        if text:
+                            remarks.append(text)
+                    elif element.tag in OBJECT_TYPES:
+                        key = element_key(element)
+                        objects[key] = ET.tostring(element, encoding="utf-8")
+                        refs[key] = set(element_references(element))
+                        name = element_name(element)
+                        if name:
+                            names[key] = name
+                        matching = element_matching_tags(
+                            element, config["tag_key_prefix"]
+                        )
+                        if matching:
+                            tags[key] = matching
+                    element.clear()
+        except (OSError, urllib.error.HTTPError, ET.XMLSyntaxError, RuntimeError) as exc:
+            last_error = exc
+        else:
+            missing = sorted(root_keys - objects.keys())
+            if remarks:
+                last_error = RuntimeError("; ".join(remarks))
+            elif missing:
+                last_error = RuntimeError(
+                    "Overpass response omitted requested root(s): " + ", ".join(missing)
+                )
+            else:
+                remote_osc(output_path, objects, known_keys)
+                seconds = time.monotonic() - started
+                LOG.info(
+                    "%s",
+                    light_green_console(
+                        f"Overpass query succeeded: {endpoint}; retrieved "
+                        f"{len(objects)} object(s), including dependencies and dependents, "
+                        f"for {len(root_keys)} root(s) in {seconds:.1f}s"
+                    ),
+                )
+                return RemoteRefresh(output_path, objects, refs, names, tags, seconds)
+
+        if attempt < retries:
+            LOG.warning(
+                "%s",
+                red_console(
+                    f"Overpass query failed for {len(root_keys)} root(s): "
+                    f"{last_error}; retrying in {retry_wait}s"
+                ),
+            )
+            time.sleep(retry_wait)
+            retry_wait = min(max_wait, max(retry_wait * 2, 1))
+
+    message = f"Overpass query unsuccessful after {retries + 1} attempt(s): {last_error}"
+    LOG.error("%s", red_console(message))
+    raise RuntimeError(message)
+
+
+def merge_remote_state(
+    state: dict[str, Any],
+    root_keys: set[str],
+    refresh: RemoteRefresh,
+) -> dict[str, Any]:
+    roots = set(state.get("roots", [])) | root_keys
+    dependencies = set(state.get("dependencies", [])) | (set(refresh.objects) - root_keys)
+    refs = {key: set(value) for key, value in state.get("refs", {}).items()}
+    refs.update(refresh.refs)
+    return {
+        "roots": sorted(roots),
+        "dependencies": sorted(dependencies - roots),
+        "refs": {key: sorted(value) for key, value in sorted(refs.items()) if key in roots | dependencies},
+    }
+
+
+def pending_entities(path: Path) -> list[str]:
+    value = load_json(path, None)
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, dict):
+        # Dependencies are derived from roots. Legacy membership files can be
+        # replayed by processing their roots without querying every geometry
+        # member independently.
+        return [str(item) for item in value.get("roots", [])]
+    return []
+
+
+def enqueue_pending(path: Path, key: str) -> None:
+    pending = pending_entities(path)
+    if key not in pending:
+        pending.append(key)
+        atomic_json(path, pending)
+
+
+def acknowledge_pending(path: Path, key: str) -> None:
+    remaining = [item for item in pending_entities(path) if item != key]
+    if remaining:
+        atomic_json(path, remaining)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def log_remote_objects(
+    refresh: RemoteRefresh,
+    root_keys: set[str],
+    context: str,
+) -> None:
+    for key in sorted(refresh.objects):
+        kind, _ = root_key_parts(key)
+        role = "root" if key in root_keys else "dependency/dependent"
+        message = f"retrieved {role} {kind} {key} from public Overpass ({context})"
+        name = refresh.names.get(key)
+        if name:
+            message += f" name={name!r}"
+        matching = refresh.tags.get(key)
+        if matching:
+            message += " tags=" + ", ".join(
+                f"{item['key']}={item['value']!r}" for item in matching
+            )
+        LOG.info("%s", light_green_console(message))
+
+
+def refresh_roots(
+    config: dict[str, Any],
+    root_keys: set[str],
+    state: dict[str, Any],
+    output_path: Path,
+    timestamp: str,
+    context: str,
+) -> tuple[RemoteRefresh, dict[str, Any]]:
+    known_keys = set(state.get("roots", [])) | set(state.get("dependencies", []))
+    refresh = query_overpass(config, root_keys, known_keys, output_path)
+    update_database(
+        config,
+        refresh.path,
+        timestamp,
+        description=f"public Overpass dependencies/dependents ({context})",
+    )
+    merged = merge_remote_state(state, root_keys, refresh)
+    atomic_json(catalog_path(config), merged)
+    log_remote_objects(refresh, root_keys, context)
+    return refresh, merged
+
+
+def process_pending_membership(config: dict[str, Any]) -> None:
+    pending_path = Path(config["membership_file"])
+    if not pending_path.exists():
+        return
+    pending_value = load_json(pending_path, None)
+    if not isinstance(pending_value, (list, dict)):
+        raise ValueError(f"membership file must contain a JSON list or object: {pending_path}")
+    pending = pending_entities(pending_path)
+    if not pending:
+        pending_path.unlink(missing_ok=True)
+        return
+
+    catalog = load_json(catalog_path(config), {})
+    if not isinstance(catalog, dict):
+        catalog = {}
+    if isinstance(pending_value, dict) and not catalog:
+        # Migrate the previous persistent membership format before replacing
+        # membership.json with the startup queue semantics.
+        catalog = pending_value
+        atomic_json(catalog_path(config), catalog)
+    work_dir = Path(config["work_dir"])
+    work_dir.mkdir(parents=True, exist_ok=True)
+    batch_size = max(1, int(config.get("overpass_query_batch_size", 50)))
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with tempfile.TemporaryDirectory(prefix="membership-", dir=work_dir) as directory:
+        temp_dir = Path(directory)
+        while pending:
+            batch = set(pending[:batch_size])
+            refresh, catalog = refresh_roots(
+                config,
+                batch,
+                catalog,
+                temp_dir / "membership.osc",
+                timestamp,
+                "startup membership",
+            )
+            del refresh
+            pending = pending[batch_size:]
+            if pending:
+                atomic_json(pending_path, pending)
+            else:
+                pending_path.unlink(missing_ok=True)
 
 
 def sequence_path(sequence: int) -> str:
@@ -166,7 +525,12 @@ def load_json(path: Path, default: Any) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def update_database(config: dict[str, Any], osc_path: Path, timestamp: str) -> None:
+def update_database(
+    config: dict[str, Any],
+    osc_path: Path,
+    timestamp: str,
+    description: str = "filtered change",
+) -> None:
     command = [
         config["overpass_update_from_dir"],
         f"--db-dir={config['db_dir']}",
@@ -175,7 +539,7 @@ def update_database(config: dict[str, Any], osc_path: Path, timestamp: str) -> N
     ]
     if config.get("meta_mode"):
         command.append(config["meta_mode"])
-    LOG.info("applying filtered change at %s", timestamp)
+    LOG.info("%s", light_blue_console(f"writing {description} to Overpass DB at {timestamp}"))
     subprocess.run(command, check=True)
 
 
@@ -383,8 +747,8 @@ def process_one(
 
     work_dir = Path(config["work_dir"])
     work_dir.mkdir(parents=True, exist_ok=True)
-    membership = Path(config["membership_file"])
-    old_state = load_json(membership, {})
+    catalog = catalog_path(config)
+    old_state = load_json(catalog, {})
     if isinstance(old_state, dict):
         retained = set(old_state.get("roots", [])) | set(old_state.get("dependencies", []))
         old_dependencies = set(old_state.get("dependencies", []))
@@ -464,7 +828,7 @@ def process_one(
                     filtered_path = next_filtered_path
                     delta_path = next_delta_path
                 filter_seconds += filter_file(
-                    config, downloaded.path, membership, filtered_path, delta_path, include
+                    config, downloaded.path, catalog, filtered_path, delta_path, include
                 )
                 events = delta_items(delta_path)
                 candidate_state = delta_state(events)
@@ -476,18 +840,49 @@ def process_one(
                 include.update(new_dependencies)
                 pass_number += 1
 
+            root_keys = {
+                str(item["id"])
+                for item in events
+                if item["op"] == "add" and item.get("root")
+            }
+            remote_refresh: RemoteRefresh | None = None
+            if root_keys and apply_database:
+                pending_path = Path(config["membership_file"])
+                for root_key in root_keys:
+                    enqueue_pending(pending_path, root_key)
+                remote_dir = temp_path / "remote"
+                remote_dir.mkdir()
+                remote_refresh, _ = refresh_roots(
+                    config,
+                    root_keys,
+                    old_state,
+                    remote_dir / "remote.osc",
+                    state["timestamp"],
+                    f"{cadence}/{sequence}",
+                )
+                for root_key in root_keys:
+                    acknowledge_pending(pending_path, root_key)
+
             has_database_changes = any(item["op"] in {"add", "remove"} for item in events)
             apply_started = time.monotonic()
-            if has_database_changes and apply_database:
-                update_database(config, filtered_path, state["timestamp"])
+            if remote_refresh is None and has_database_changes and apply_database:
+                update_database(
+                    config,
+                    filtered_path,
+                    state["timestamp"],
+                    description=f"filtered replication change ({cadence}/{sequence})",
+                )
             apply_seconds = time.monotonic() - apply_started
-            if events:
-                commit_delta(membership, delta_path)
+            if events and remote_refresh is None:
+                commit_delta(catalog, delta_path)
             else:
-                LOG.info("sequence %s/%s contained no matching objects", cadence, sequence)
+                if not events:
+                    LOG.info("sequence %s/%s contained no matching objects", cadence, sequence)
 
             for item in events:
                 if item["op"] == "add":
+                    if remote_refresh is not None and item["id"] in remote_refresh.objects:
+                        continue
                     kind = "root" if item.get("root") else "dependency"
                     verb = "applied" if apply_database else "discovered"
                     message = object_log_message(
@@ -643,6 +1038,7 @@ def catch_up(
 
 
 def run(config: dict[str, Any]) -> None:
+    process_pending_membership(config)
     state_path = Path(config["state_file"])
     checkpoint = load_json(state_path, None)
     if checkpoint is None:

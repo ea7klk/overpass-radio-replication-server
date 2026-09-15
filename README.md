@@ -2,8 +2,10 @@
 
 This project builds a small Overpass API database by replaying OSM replication
 changes. Matching nodes, ways, and relations with a tag key beginning with
-`communication:amateur_radio` are retained as roots, together with the
-reference closure needed to resolve their geometry and members.
+`communication:amateur_radio` are retained as roots. For each root, the
+replicator queries the configured public Overpass API for the root, its
+downward dependencies, and upward dependents, then imports that complete
+result into the local database.
 
 It does not retain downloaded upstream `.osc.gz` files. A change is fetched,
 filtered into a short-lived local batch, applied to Overpass, and then deleted.
@@ -11,11 +13,11 @@ The raw upstream change is never written to disk.
 
 ## Reference-complete scope
 
-The database contains matching roots plus untagged dependencies. A way causes
-its node references to be retained; a relation causes its member objects to be
-retained, and known dependency references are followed recursively. Updates to
-dependency nodes, ways, and relations are applied as well. Clients should
-select roots explicitly, for example:
+The database contains matching roots plus the untagged dependencies and
+dependents returned by the public Overpass query. A way causes its node
+references to be retrieved; a relation causes its member objects to be
+retrieved, and upward recursion retrieves ways and relations that contain the
+root. Clients should select roots explicitly, for example:
 
 ```overpass
 [out:json];
@@ -35,6 +37,9 @@ wrapper that does not expose a TTY; set `NO_COLOR=1` to disable ANSI colors.
 Named objects include their `name` tag, and matching objects also include each
 matching tag label and value, for example
 `name='Local Repeater' tags=communication:amateur_radio='repeater'`.
+Successful public Overpass queries and retrieved objects are light green;
+query failures are red, and writes to the local Overpass database are light
+blue.
 It also logs a completion line for every source file, for example:
 
 ```text
@@ -103,9 +108,20 @@ corresponding minutely sequence is found by binary-searching per-sequence state
 files and the minute stream is polled continuously. The minute index is not
 enumerated.
 
-Starting from the oldest daily sequence allows dependencies to be promoted as
-their referencing roots appear. The implementation persists the root set,
-dependency set, and known reference graph in `membership_file`.
+Starting from the oldest daily sequence allows roots to be found in historical
+changes. The implementation persists the root set, dependency set, and known
+reference graph in `catalog_file`. `membership_file` is a resumable queue of
+roots to fetch from the public Overpass API. If it exists at startup, each
+queued root is processed successfully before it is removed; a failed query or
+local update leaves the entry queued for the next restart.
+
+The public query endpoint defaults to
+`https://overpass.private.coffee/api/interpreter` and can be changed with
+`overpass_query_url`. Queries are POST requests containing both recursive
+directions, `>;` and `<<;`. The response must have a successful HTTP status,
+valid OSM XML, no Overpass `<remark>`/`<error>`, and must contain every
+requested root. The replicator retries unsuccessful queries and does not
+advance the replication checkpoint until the local update succeeds.
 
 When a change file introduces a new dependency, the source `.osc.gz` is
 re-read locally with the newly discovered IDs seeded into the filter. This
@@ -122,10 +138,10 @@ with two services:
   Overpass update scripts it may need.
 
 Both services mount the named `radio-data` volume at
-`/srv/overpass-radio`. The database, checkpoint, membership graph, and work
-files therefore survive container replacement and are available to the
-replicator and Overpass process. Source replication files remain temporary and
-are deleted after processing.
+`/srv/overpass-radio`. The database, checkpoint, persistent catalog, membership
+queue, and work files therefore survive container replacement and are available
+to the replicator and Overpass process. Source replication files remain
+temporary and are deleted after processing.
 
 Build and start locally:
 
@@ -148,7 +164,9 @@ services:
 
 The default container configuration starts the January 2017 two-phase
 bootstrap described above. It uses the container paths `/srv/overpass-radio`
-and `/opt/overpass/bin/update_from_dir`.
+and `/opt/overpass/bin/update_from_dir`. On startup, any roots queued in
+`/srv/overpass-radio/membership.json` are queried and imported first; the queue
+file is removed only after successful processing.
 
 Set `ALLOWED_ORIGINS` to a comma-separated list of browser origins, including
 the scheme and optional port, for example:
@@ -261,7 +279,12 @@ Set these values in `/etc/overpass-radio.json`:
   "overpass_update_from_dir": "/opt/overpass/bin/update_from_dir",
   "work_dir": "/srv/overpass-radio/work",
   "state_file": "/srv/overpass-radio/state.json",
-  "membership_file": "/srv/overpass-radio/membership.json"
+  "membership_file": "/srv/overpass-radio/membership.json",
+  "catalog_file": "/srv/overpass-radio/catalog.json",
+  "overpass_query_url": "https://overpass.private.coffee/api/interpreter",
+  "overpass_query_timeout": 180,
+  "overpass_query_retries": 3,
+  "overpass_query_batch_size": 50
 }
 ```
 
@@ -270,6 +293,12 @@ For the included example, leave `daily_start_sequence` at `1572`,
 `null`. The two-phase first run can take a long time. Do not use Overpass's `download_clone.sh`
 for this project: it would create a complete worldwide database instead of
 the filtered database built by this repository.
+
+If `/srv/overpass-radio/membership.json` contains a JSON list of root keys such
+as `node:123`, those roots are queried from the public Overpass API at startup.
+The file is deleted only after all its entries have been successfully imported;
+failed entries remain available for retry. The persistent root/dependency
+catalog is stored separately in `catalog_file`.
 
 The two-phase bootstrap settings are intended for a new empty database. If a
 checkpoint already exists, the persisted `phase` controls resumption and

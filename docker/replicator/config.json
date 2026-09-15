@@ -4,6 +4,7 @@
   "work_dir": "/srv/overpass-radio/work",
   "state_file": "/srv/overpass-radio/state.json",
   "membership_file": "/srv/overpass-radio/membership.json",
+  "catalog_file": "/srv/overpass-radio/catalog.json",
   "daily_base_url": "https://planet.openstreetmap.org/replication/day/",
   "minute_base_url": "https://planet.openstreetmap.org/replication/minute/",
   "daily_start_sequence": 1572,
@@ -12,6 +13,10 @@
   "poll_seconds": 60,
   "retry_initial_seconds": 15,
   "retry_max_seconds": 900,
+  "overpass_query_url": "https://overpass.private.coffee/api/interpreter",
+  "overpass_query_timeout": 180,
+  "overpass_query_retries": 3,
+  "overpass_query_batch_size": 50,
   "tag_key_prefix": "communication:amateur_radio",
   "meta_mode": "--meta=no"
 }

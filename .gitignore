@@ -5,6 +5,7 @@ __pycache__/
 # Local runtime state and temporary replication data.
 state.json
 membership.json
+catalog.json
 *.json.new
 *.osc
 *.osc.gz

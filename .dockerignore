@@ -9,4 +9,5 @@ dist
 *.osc.gz
 state.json
 membership.json
+catalog.json
 work

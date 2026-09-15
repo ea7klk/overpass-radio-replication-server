@@ -1,4 +1,5 @@
 import gzip
+from io import BytesIO
 import json
 import os
 import tempfile
@@ -10,9 +11,14 @@ from radio_overpass.replicator import (
     DownloadedChange,
     PREFETCH_WINDOW,
     object_log_message,
+    process_pending_membership,
     process_one,
+    query_overpass,
     quick_check,
+    light_blue_console,
+    light_green_console,
     red_console,
+    RemoteRefresh,
 )
 
 
@@ -64,6 +70,8 @@ class QuickCheckTest(unittest.TestCase):
                 red_console("discovered root node:10", is_tty=False),
                 "discovered root node:10",
             )
+            self.assertEqual(light_green_console("query succeeded", is_tty=True), "\033[92mquery succeeded\033[0m")
+            self.assertEqual(light_blue_console("database write", is_tty=True), "\033[94mdatabase write\033[0m")
 
     def test_object_log_message_includes_name(self):
         self.assertEqual(
@@ -84,12 +92,13 @@ class QuickCheckTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "change.osc.gz"
-            membership = root / "membership.json"
+            catalog = root / "catalog.json"
             source.write_bytes(gzip.compress(b"<osmChange/>"))
             config = {
                 "daily_base_url": "https://example.test/day",
                 "work_dir": str(root / "work"),
-                "membership_file": str(membership),
+                "membership_file": str(root / "membership.json"),
+                "catalog_file": str(catalog),
                 "tag_key_prefix": "communication:amateur_radio",
                 "overpass_update_from_dir": "/bin/true",
                 "db_dir": str(root / "db"),
@@ -136,7 +145,73 @@ class QuickCheckTest(unittest.TestCase):
 
             self.assertEqual(result["sequence"], 1816)
             self.assertFalse(source.exists())
-            self.assertEqual(json.loads(membership.read_text())["dependencies"], ["node:1"])
+            self.assertEqual(json.loads(catalog.read_text())["dependencies"], ["node:1"])
+
+    def test_public_overpass_query_returns_root_dependencies_and_dependents(self):
+        class Response(BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+        response = Response(
+            b'''<osm version="0.6">
+              <node id="1" lat="40" lon="-3"/>
+              <node id="2" lat="40.1" lon="-3.1"/>
+              <way id="9"><nd ref="1"/><nd ref="2"/></way>
+            </osm>'''
+        )
+        config = {
+            "overpass_query_url": "https://overpass.example/api/interpreter",
+            "overpass_query_timeout": 30,
+            "overpass_query_retries": 0,
+            "retry_initial_seconds": 1,
+            "retry_max_seconds": 1,
+            "tag_key_prefix": "communication:amateur_radio",
+        }
+        with patch("radio_overpass.replicator.urllib.request.urlopen", return_value=response) as urlopen:
+            with tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "remote.osc"
+                refresh = query_overpass(config, {"node:1"}, set(), output)
+                remote_xml = output.read_bytes()
+
+        self.assertEqual(set(refresh.objects), {"node:1", "node:2", "way:9"})
+        query = urlopen.call_args.args[0].data.decode("utf-8")
+        self.assertIn("node(id:1);", query)
+        self.assertIn("(._;<<;);", query)
+        self.assertIn(b"<way id=\"9\"", remote_xml)
+
+    def test_startup_membership_is_removed_after_successful_processing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pending = root / "membership.json"
+            catalog = root / "catalog.json"
+            pending.write_text(json.dumps(["node:1"]), encoding="utf-8")
+            config = {
+                "membership_file": str(pending),
+                "catalog_file": str(catalog),
+                "work_dir": str(root / "work"),
+                "overpass_query_batch_size": 50,
+            }
+            refresh = RemoteRefresh(
+                root / "remote.osc",
+                {"node:1": b'<node id="1" lat="40" lon="-3"/>'},
+                {"node:1": set()},
+                {},
+                {},
+                0.1,
+            )
+            with (
+                patch("radio_overpass.replicator.query_overpass", return_value=refresh),
+                patch("radio_overpass.replicator.update_database"),
+            ):
+                process_pending_membership(config)
+
+            self.assertFalse(pending.exists())
+            self.assertIn("node:1", json.loads(catalog.read_text())["roots"])
 
 
 if __name__ == "__main__":
