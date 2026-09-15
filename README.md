@@ -312,15 +312,15 @@ failed entries remain available for retry. The persistent root/dependency
 catalog is stored separately in `catalog_file`.
 
 The container performs this empty-database initialization automatically before
-starting its dispatcher. For a systemd installation, run the command above
-once before enabling the dispatcher. If a previous attempt left files in
-`db_dir` but no `nodes.map`, stop the dispatcher and move that incomplete
-directory aside before retrying; the replicator refuses to write into a
-partially initialized database. The first successful public Overpass result
-then uses `update_database`; later results use `update_from_dir`. This is why
-both Overpass binaries are required. A startup membership entry is
-acknowledged only after the corresponding database write has completed
-successfully.
+starting its dispatcher. A valid existing database is detected by `nodes.map`
+and reused without any startup initialization. If files exist but `nodes.map`
+is absent, both the container and replicator leave the directory untouched and
+stop; they never delete, move, or overwrite it. Repair or restore such a
+partial database explicitly while the dispatcher is stopped. The first
+successful public Overpass result then uses `update_database`; later results
+use `update_from_dir`. This is why both Overpass binaries are required. A
+startup membership entry is acknowledged only after the corresponding database
+write has completed successfully.
 
 The two-phase bootstrap settings are intended for a new empty database. If a
 checkpoint already exists, the persisted `phase` controls resumption and

@@ -546,10 +546,15 @@ def update_database(
         db_dir.mkdir(parents=True, exist_ok=True)
         first_entry = next(db_dir.iterdir(), None)
         if first_entry is not None:
-            raise RuntimeError(
+            message = (
                 f"Overpass DB directory is partially initialized: {db_dir}/nodes.map "
-                f"is missing while {first_entry.name!r} exists; stop the dispatcher, "
-                "move the incomplete database aside, and initialize an empty directory"
+                f"is missing while {first_entry.name!r} exists; leaving the database "
+                "untouched"
+            )
+            LOG.error("%s", red_console(message))
+            raise RuntimeError(
+                message
+                + "; stop the dispatcher and repair or restore it explicitly"
             )
         update_binary = config.get("overpass_update_database")
         if not update_binary:

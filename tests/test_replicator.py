@@ -251,6 +251,8 @@ class QuickCheckTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "partially initialized"):
                 update_database(config, source, "2026-09-15T12:00:00Z")
 
+            self.assertTrue((db_dir / "dispatcher.lock").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
