@@ -134,15 +134,14 @@ def update_database(config: dict[str, Any], osc_path: Path, timestamp: str) -> N
 
 
 def commit_delta(membership_path: Path, delta_path: Path) -> None:
-    membership = set(load_json(membership_path, []))
+    final_state: dict[str, Any] | None = None
     with delta_path.open(encoding="utf-8") as handle:
         for line in handle:
             item = json.loads(line)
-            if item["op"] == "add":
-                membership.add(item["id"])
-            else:
-                membership.discard(item["id"])
-    atomic_json(membership_path, sorted(membership))
+            if item["op"] == "state":
+                final_state = item["state"]
+    if final_state is not None:
+        atomic_json(membership_path, final_state)
 
 
 def process_one(config: dict[str, Any], cadence: str, sequence: int) -> dict[str, Any]:
@@ -188,16 +187,26 @@ def process_one(config: dict[str, Any], cadence: str, sequence: int) -> dict[str
                 time.sleep(wait)
                 wait = min(max_wait, max(wait * 2, 1))
 
-        if delta_path.stat().st_size > 0:
+        events = [
+            json.loads(line)
+            for line in delta_path.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        has_database_changes = any(item["op"] in {"add", "remove"} for item in events)
+        if has_database_changes:
             update_database(config, filtered_path, state["timestamp"])
+        if events:
             commit_delta(membership, delta_path)
         else:
             LOG.info("sequence %s/%s contained no matching objects", cadence, sequence)
 
-        for line in delta_path.read_text(encoding="utf-8").splitlines():
-            item = json.loads(line)
+        for item in events:
             if item["op"] == "add":
-                LOG.info("added %s at replication %s/%s", item["id"], cadence, sequence)
+                kind = "root" if item.get("root") else "dependency"
+                LOG.info("applied %s %s at replication %s/%s", kind, item["id"], cadence, sequence)
+            elif item["op"] == "remove":
+                kind = "root" if item.get("root") else "dependency"
+                LOG.info("removed %s %s at replication %s/%s", kind, item["id"], cadence, sequence)
 
     return state
 
