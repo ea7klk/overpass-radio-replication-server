@@ -151,7 +151,7 @@ def filter_stream(
     filtered_path: Path,
     delta_path: Path,
     include: set[str],
-) -> None:
+) -> dict[str, float]:
     command = [
         sys.executable,
         "-m",
@@ -187,16 +187,22 @@ def filter_stream(
     max_wait = int(config["retry_max_seconds"])
     while True:
         curl_process: subprocess.Popen[bytes] | None = None
+        started = time.monotonic()
         try:
             curl_process = subprocess.Popen(curl_command, stdout=subprocess.PIPE)
             assert curl_process.stdout is not None
             with curl_process.stdout as raw:
                 with filtered_path.open("wb") as filtered:
                     subprocess.run(command, stdin=raw, stdout=filtered, check=True, env=environment)
+            filter_finished = time.monotonic()
             curl_returncode = curl_process.wait()
+            download_finished = time.monotonic()
             if curl_returncode != 0:
                 raise subprocess.CalledProcessError(curl_returncode, curl_command)
-            return
+            return {
+                "download_seconds": download_finished - started,
+                "filter_seconds": filter_finished - started,
+            }
         except (OSError, urllib.error.HTTPError, subprocess.CalledProcessError) as exc:
             LOG.warning("streaming download/filter failed for %s: %s; retrying in %ss", change_url, exc, wait)
             filtered_path.unlink(missing_ok=True)
@@ -250,11 +256,18 @@ def process_one(config: dict[str, Any], cadence: str, sequence: int) -> dict[str
         # This keeps source files off disk while making same-file references
         # available to Overpass. Most minute files need only one pass.
         pass_number = 0
+        download_seconds = 0.0
+        filter_seconds = 0.0
+        file_started = time.monotonic()
         while True:
             if pass_number:
                 filtered_path = temp_path / f"filtered-{pass_number}.osc"
                 delta_path = temp_path / f"delta-{pass_number}.jsonl"
-            filter_stream(config, change_url, membership, filtered_path, delta_path, include)
+            stream_stats = filter_stream(
+                config, change_url, membership, filtered_path, delta_path, include
+            )
+            download_seconds += stream_stats["download_seconds"]
+            filter_seconds += stream_stats["filter_seconds"]
             events = delta_items(delta_path)
             candidate_state = delta_state(events)
             if candidate_state is None:
@@ -266,8 +279,10 @@ def process_one(config: dict[str, Any], cadence: str, sequence: int) -> dict[str
             pass_number += 1
 
         has_database_changes = any(item["op"] in {"add", "remove"} for item in events)
+        apply_started = time.monotonic()
         if has_database_changes:
             update_database(config, filtered_path, state["timestamp"])
+        apply_seconds = time.monotonic() - apply_started
         if events:
             commit_delta(membership, delta_path)
         else:
@@ -280,6 +295,18 @@ def process_one(config: dict[str, Any], cadence: str, sequence: int) -> dict[str
             elif item["op"] == "remove":
                 kind = "root" if item.get("root") else "dependency"
                 LOG.info("removed %s %s at replication %s/%s", kind, item["id"], cadence, sequence)
+
+        LOG.info(
+            "completed %s replication file %s: passes=%d download=%.1fs "
+            "filter=%.1fs apply=%.1fs total=%.1fs",
+            cadence,
+            change_url,
+            pass_number + 1,
+            download_seconds,
+            filter_seconds,
+            apply_seconds,
+            time.monotonic() - file_started,
+        )
 
     return state
 
