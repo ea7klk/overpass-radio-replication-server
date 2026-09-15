@@ -21,6 +21,7 @@ from radio_overpass.replicator import (
     update_database,
     light_blue_console,
     light_green_console,
+    light_turquoise_console,
     red_console,
     RemoteRefresh,
     OverpassRootNotFoundError,
@@ -65,16 +66,21 @@ class QuickCheckTest(unittest.TestCase):
     def test_prefetch_window_is_ten(self):
         self.assertEqual(PREFETCH_WINDOW, 10)
 
-    def test_discovered_root_node_can_be_colored_red(self):
+    def test_discovered_entities_can_be_colored_light_turquoise(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(
-                red_console("discovered root node:10", is_tty=True),
-                "\033[91mdiscovered root node:10\033[0m",
+                light_turquoise_console("discovered root node:10", is_tty=True),
+                "\033[96mdiscovered root node:10\033[0m",
             )
             self.assertEqual(
-                red_console("discovered root node:10", is_tty=False),
-                "discovered root node:10",
+                light_turquoise_console("discovered dependency way:20", is_tty=False),
+                "discovered dependency way:20",
             )
+            self.assertEqual(
+                light_turquoise_console("discovered dependency relation:30", is_tty=True),
+                "\033[96mdiscovered dependency relation:30\033[0m",
+            )
+            self.assertEqual(red_console("query failed", is_tty=True), "\033[91mquery failed\033[0m")
             self.assertEqual(light_green_console("query succeeded", is_tty=True), "\033[92mquery succeeded\033[0m")
             self.assertEqual(light_blue_console("database write", is_tty=True), "\033[94mdatabase write\033[0m")
 

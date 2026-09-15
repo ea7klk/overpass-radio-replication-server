@@ -29,6 +29,7 @@ PREFETCH_WORKERS = 2
 ANSI_RED = "\033[91m"
 ANSI_LIGHT_GREEN = "\033[92m"
 ANSI_LIGHT_BLUE = "\033[94m"
+ANSI_LIGHT_TURQUOISE = "\033[96m"
 ANSI_RESET = "\033[0m"
 OBJECT_TYPES = {"node", "way", "relation"}
 ROOT_KEY = re.compile(r"^(node|way|relation):([1-9][0-9]*)$")
@@ -85,6 +86,17 @@ def light_blue_console(text: str, *, is_tty: bool | None = None) -> str:
     if not is_tty and os.environ.get("FORCE_COLOR") != "1":
         return text
     return f"{ANSI_LIGHT_BLUE}{text}{ANSI_RESET}"
+
+
+def light_turquoise_console(text: str, *, is_tty: bool | None = None) -> str:
+    """Color discovery entity messages light turquoise in interactive logs."""
+    if os.environ.get("NO_COLOR") is not None:
+        return text
+    if is_tty is None:
+        is_tty = sys.stderr.isatty()
+    if not is_tty and os.environ.get("FORCE_COLOR") != "1":
+        return text
+    return f"{ANSI_LIGHT_TURQUOISE}{text}{ANSI_RESET}"
 
 
 def object_log_message(
@@ -1056,13 +1068,16 @@ def process_one(
                         item.get("name"),
                         item.get("tags"),
                     )
-                    if not apply_database and item.get("root") and item["id"].startswith("node:"):
-                        message = red_console(message)
+                    if not apply_database:
+                        message = light_turquoise_console(message)
                     LOG.info("%s", message)
                 elif item["op"] == "remove":
                     kind = "root" if item.get("root") else "dependency"
                     verb = "removed" if apply_database else "discovered removal of"
-                    LOG.info("%s %s at replication %s/%s", verb, kind, cadence, sequence)
+                    message = f"{verb} {kind} {item['id']} at replication {cadence}/{sequence}"
+                    if not apply_database:
+                        message = light_turquoise_console(message)
+                    LOG.info("%s", message)
 
             process_seconds = time.monotonic() - file_started
             LOG.info(
