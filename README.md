@@ -360,6 +360,24 @@ The two-phase bootstrap settings are intended for a new empty database. If a
 checkpoint already exists, the persisted `phase` controls resumption and
 changing these settings does not restart the bootstrap automatically.
 
+### Fleet bootstrap from an OSM PBF snapshot
+
+The Fleet manifest can bootstrap a fresh database from an existing PBF snapshot
+before starting the dispatcher or API. It mounts the node-local
+`/root/planet-260907.osm.pbf` read-only into the Overpass pod's init container,
+filters the configured `communication:amateur_radio` objects and their
+references into a temporary XML file, imports that XML with `update_database`,
+and writes the initial catalog plus snapshot metadata to the shared volume.
+The source PBF is never copied to, modified, or deleted from the host.
+
+The snapshot timestamp is read from the PBF replication header (falling back to
+the last object timestamp when necessary). On the first replicator start that
+timestamp is mapped to the first subsequent minutely replication sequence, so
+older minute files are not replayed. Existing roots are still refreshed through
+the configured public Overpass endpoint when needed to discover newly added
+parents or dependencies; the initial catalog refresh is delayed to avoid a
+startup query burst.
+
 ### Start Overpass and the replicator with systemd
 
 Clone this repository to a stable location:

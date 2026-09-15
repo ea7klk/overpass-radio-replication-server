@@ -1333,14 +1333,14 @@ class CatalogQueryPool:
         self.roots: set[str] = set()
         self.next_due: dict[str, float] = {}
 
-    def _refresh_catalog_roots(self) -> None:
+    def _refresh_catalog_roots(self, *, initial_delay_seconds: int = 0) -> None:
         catalog = load_json(catalog_path(self.config), {})
         if not isinstance(catalog, dict):
             return
         roots = {str(root) for root in catalog.get("roots", [])}
         now = time.monotonic()
         for root_key in roots - self.roots:
-            self.next_due[root_key] = now
+            self.next_due[root_key] = now + max(0, initial_delay_seconds)
         for root_key in self.roots - roots:
             self.next_due.pop(root_key, None)
         self.roots = roots
@@ -1378,7 +1378,12 @@ class CatalogQueryPool:
             )
 
     def start(self) -> None:
-        self._refresh_catalog_roots()
+        self._refresh_catalog_roots(
+            initial_delay_seconds=max(
+                0,
+                int(self.config.get("catalog_query_initial_delay_seconds", 0)),
+            )
+        )
         self._schedule_due()
 
     def has_ready(self) -> bool:
@@ -1523,6 +1528,30 @@ def resolve_minute_start(config: dict[str, Any], timestamp: str) -> int:
     return lo
 
 
+def snapshot_checkpoint(config: dict[str, Any]) -> dict[str, Any] | None:
+    metadata_path = config.get("snapshot_metadata_file")
+    if not metadata_path:
+        return None
+    metadata = load_json(Path(metadata_path), None)
+    if not isinstance(metadata, dict):
+        return None
+    timestamp = metadata.get("timestamp")
+    if not isinstance(timestamp, str) or not timestamp:
+        raise ValueError(f"initial snapshot metadata has no timestamp: {metadata_path}")
+    minute_sequence = resolve_minute_start(config, timestamp)
+    LOG.info(
+        "initial snapshot timestamp is %s; starting minute replication at sequence %s",
+        timestamp,
+        minute_sequence,
+    )
+    return {
+        "phase": "apply",
+        "cadence": "minute",
+        "sequence": minute_sequence - 1,
+        "timestamp": timestamp,
+    }
+
+
 def catch_up(
     config: dict[str, Any],
     checkpoint: dict[str, Any],
@@ -1624,25 +1653,28 @@ def run(config: dict[str, Any]) -> None:
         try:
             checkpoint = load_json(state_path, None)
             if checkpoint is None:
-                daily_start = config.get("daily_start_sequence")
-                if daily_start is None:
-                    sequences = indexed_sequences(
-                        config["daily_base_url"],
-                        int(config["retry_initial_seconds"]),
-                        int(config["retry_max_seconds"]),
-                    )
-                    if not sequences:
-                        raise RuntimeError("daily replication index contains no sequences")
-                    daily_start = sequences[0]
-                dependency_start = config.get("daily_dependency_start_sequence")
-                if dependency_start is not None and int(dependency_start) > int(daily_start):
-                    raise ValueError("daily_dependency_start_sequence must not exceed daily_start_sequence")
-                checkpoint = {
-                    "phase": "discovery" if dependency_start is not None else "apply",
-                    "cadence": "day",
-                    "sequence": int(daily_start) - 1,
-                    "timestamp": "",
-                }
+                checkpoint = snapshot_checkpoint(config)
+                if checkpoint is None:
+                    daily_start = config.get("daily_start_sequence")
+                    if daily_start is None:
+                        sequences = indexed_sequences(
+                            config["daily_base_url"],
+                            int(config["retry_initial_seconds"]),
+                            int(config["retry_max_seconds"]),
+                        )
+                        if not sequences:
+                            raise RuntimeError("daily replication index contains no sequences")
+                        daily_start = sequences[0]
+                    dependency_start = config.get("daily_dependency_start_sequence")
+                    if dependency_start is not None and int(dependency_start) > int(daily_start):
+                        raise ValueError("daily_dependency_start_sequence must not exceed daily_start_sequence")
+                    checkpoint = {
+                        "phase": "discovery" if dependency_start is not None else "apply",
+                        "cadence": "day",
+                        "sequence": int(daily_start) - 1,
+                        "timestamp": "",
+                    }
+                atomic_json(state_path, checkpoint)
 
             discovery = checkpoint.get("phase") == "discovery"
             checkpoint = catch_up(

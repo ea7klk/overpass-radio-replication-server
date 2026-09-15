@@ -23,25 +23,30 @@ spec:
       nodeSelector:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
-      - name: initialize-overpass-database
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.6
+      - name: initialize-overpass-from-pbf
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.7
         imagePullPolicy: IfNotPresent
         command:
-        - /bin/sh
-        - -c
-        args:
-        - |
-          set -eu
-          db_dir=/srv/overpass-radio/db
-          mkdir -p "$db_dir" /srv/overpass-radio/work
-          if [ ! -f "$db_dir/nodes.map" ]; then
-            printf '%s\n' '<osm version="0.6" generator="radio-overpass"><node id="1" lat="0" lon="0" version="1"/></osm>' |
-              /opt/overpass/bin/update_database --db-dir="$db_dir" --meta=no
-          fi
-          test -f "$db_dir/nodes.map"
+        - /usr/local/bin/radio-overpass-initial-import
+        env:
+        - name: INITIAL_PBF_PATH
+          value: /initial/planet-260907.osm.pbf
+        - name: OVERPASS_DB_DIR
+          value: /srv/overpass-radio/db
+        - name: OVERPASS_WORK_DIR
+          value: /srv/overpass-radio/work
+        - name: CATALOG_FILE
+          value: /srv/overpass-radio/catalog.json
+        - name: SNAPSHOT_METADATA_FILE
+          value: /srv/overpass-radio/initial-snapshot.json
+        - name: TAG_KEY_PREFIX
+          value: communication:amateur_radio
         volumeMounts:
         - name: data
           mountPath: /srv/overpass-radio
+        - name: initial-pbf
+          mountPath: /initial/planet-260907.osm.pbf
+          readOnly: true
       containers:
       - name: overpass
         image: ghcr.io/ea7klk/overpass-radio-overpass:0.0.6
@@ -114,6 +119,10 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: overpass-radio-data
+      - name: initial-pbf
+        hostPath:
+          path: /root/planet-260907.osm.pbf
+          type: File
       - name: apache-cors
         configMap:
           name: overpass-radio-apache-cors
@@ -145,7 +154,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
       - name: wait-for-overpass
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.6
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.7
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -160,7 +169,7 @@ spec:
           done
       containers:
       - name: replicator
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.6
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.7
         imagePullPolicy: IfNotPresent
         env:
         - name: CONFIG_PATH
