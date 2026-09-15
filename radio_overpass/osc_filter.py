@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""Filter an OsmChange XML stream by tag-key prefix.
+"""Filter an OsmChange XML stream and retain complete references.
 
-The filter keeps all tags on matching objects. It also handles the important
-case where a modify loses the matching tag: if that object is known to be in
-the target set, a delete is emitted.
-
-Input is gzip-compressed OSC XML on stdin. Output is an OSC XML batch on
-stdout. A JSON-lines delta is written to --delta so membership is committed
-only after Overpass accepts the batch.
+Matching objects are roots. Their referenced nodes, ways, and relations are
+promoted to dependencies so Overpass can resolve geometry and members. The
+membership state is written to a delta file and committed only after the
+filtered change has been accepted by Overpass.
 """
 
 from __future__ import annotations
@@ -16,17 +13,36 @@ import argparse
 import gzip
 import json
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
 
 
-def load_membership(path: Path) -> set[str]:
+OBJECT_TYPES = {"node", "way", "relation"}
+GROUPS = ("create", "modify", "delete")
+
+
+def empty_state() -> dict[str, object]:
+    return {"roots": [], "dependencies": [], "refs": {}}
+
+
+def load_state(path: Path) -> dict[str, object]:
     if not path.exists():
-        return set()
+        return empty_state()
     with path.open(encoding="utf-8") as handle:
         data = json.load(handle)
-    return set(data)
+    # Accept the old project format, which was just a list of matching IDs.
+    if isinstance(data, list):
+        return {"roots": sorted(set(data)), "dependencies": [], "refs": {}}
+    return {
+        "roots": sorted(set(data.get("roots", []))),
+        "dependencies": sorted(set(data.get("dependencies", []))),
+        "refs": {
+            str(key): sorted(set(value))
+            for key, value in data.get("refs", {}).items()
+        },
+    }
 
 
 def osm_key(element: ET.Element) -> str:
@@ -41,9 +57,65 @@ def matches(element: ET.Element, prefix: str) -> bool:
     )
 
 
+def references(element: ET.Element) -> list[str]:
+    if element.tag == "way":
+        return [f"node:{child.attrib['ref']}" for child in element if child.tag == "nd"]
+    if element.tag == "relation":
+        return [
+            f"{child.attrib['type']}:{child.attrib['ref']}"
+            for child in element
+            if child.tag == "member" and child.attrib.get("type") in OBJECT_TYPES
+        ]
+    return []
+
+
 def xml_start(tag: str, attributes: dict[str, str]) -> bytes:
     attrs = "".join(f" {key}={quoteattr(value)}" for key, value in attributes.items())
     return f"<{tag}{attrs}>\n".encode("utf-8")
+
+
+def deletion_element(element: ET.Element) -> ET.Element:
+    """Create a valid minimal delete element for a tag-loss removal."""
+    attrs = {key: value for key, value in element.attrib.items() if key != "visible"}
+    attrs["visible"] = "false"
+    return ET.Element(element.tag, attrs)
+
+
+def state_sets(state: dict[str, object]) -> tuple[set[str], set[str], dict[str, set[str]]]:
+    roots = set(state["roots"])
+    dependencies = set(state["dependencies"])
+    refs = {key: set(value) for key, value in state["refs"].items()}
+    return roots, dependencies, refs
+
+
+def serialized_state(
+    roots: set[str], dependencies: set[str], refs: dict[str, set[str]]
+) -> dict[str, object]:
+    retained = roots | dependencies
+    return {
+        "roots": sorted(roots),
+        "dependencies": sorted(dependencies),
+        "refs": {
+            key: sorted(refs.get(key, set()))
+            for key in sorted(retained)
+            if refs.get(key)
+        },
+    }
+
+
+def promote(key: str, dependencies: set[str], refs: dict[str, set[str]]) -> None:
+    """Promote a known object's complete, already-known reference subtree."""
+    pending = [key]
+    seen: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for child in refs.get(current, set()):
+            if child not in dependencies:
+                dependencies.add(child)
+            pending.append(child)
 
 
 def main() -> int:
@@ -53,66 +125,105 @@ def main() -> int:
     parser.add_argument("--prefix", default="communication:amateur_radio")
     args = parser.parse_args()
 
-    membership = load_membership(args.membership)
+    roots, dependencies, refs = state_sets(load_state(args.membership))
     args.delta.parent.mkdir(parents=True, exist_ok=True)
-    delta_handle = args.delta.open("w", encoding="utf-8")
 
-    def record(item: dict[str, str]) -> None:
-        delta_handle.write(json.dumps(item, separators=(",", ":")) + "\n")
-
-    output = sys.stdout.buffer
+    events: list[dict[str, object]] = []
+    output_files = {group: tempfile.TemporaryFile(mode="w+b") for group in GROUPS}
+    root_tag: str | None = None
+    root_attributes: dict[str, str] = {}
     action: str | None = None
     object_element: ET.Element | None = None
-    root_seen = False
-    groups_open = False
 
-    # iterparse keeps only the current object in memory. This matters for the
-    # daily stream, whose unfiltered changes can be very large.
-    with gzip.GzipFile(fileobj=sys.stdin.buffer, mode="rb") as source:
-        for event, element in ET.iterparse(source, events=("start", "end")):
-            if event == "start":
-                if not root_seen:
-                    root_seen = True
-                    output.write(b"<?xml version='1.0' encoding='UTF-8'?>\n")
-                    output.write(xml_start(element.tag, element.attrib))
-                    for group in ("create", "modify", "delete"):
-                        output.write(f"<{group}>\n".encode("ascii"))
-                    groups_open = True
-                elif element.tag in {"create", "modify", "delete"}:
-                    action = element.tag
-                elif element.tag in {"node", "way", "relation"}:
-                    object_element = element
-                continue
+    def emit(group: str, element: ET.Element) -> None:
+        output_files[group].write(ET.tostring(element, encoding="utf-8"))
+        output_files[group].write(b"\n")
 
-            if element.tag in {"node", "way", "relation"} and object_element is element:
-                key = osm_key(element)
-                is_match = matches(element, args.prefix)
-                known = key in membership
-                selected_action = action
+    def event(op: str, key: str, root: bool = False) -> None:
+        events.append({"op": op, "id": key, "root": root})
 
-                if selected_action == "delete":
-                    if known:
-                        output.write(ET.tostring(element, encoding="utf-8"))
-                        output.write(b"\n")
-                        record({"id": key, "op": "remove"})
-                elif is_match:
-                    output.write(ET.tostring(element, encoding="utf-8"))
-                    output.write(b"\n")
-                    record({"id": key, "op": "add"})
-                elif known:
-                    output.write(ET.tostring(element, encoding="utf-8"))
-                    output.write(b"\n")
-                    record({"id": key, "op": "remove"})
+    # iterparse keeps only the current object in memory. The three short-lived
+    # group files let us route a tag-loss removal into <delete> while the
+    # upstream stream remains create/modify/delete ordered.
+    try:
+        with gzip.GzipFile(fileobj=sys.stdin.buffer, mode="rb") as source:
+            for parse_event, element in ET.iterparse(source, events=("start", "end")):
+                if parse_event == "start":
+                    if root_tag is None:
+                        root_tag = element.tag
+                        root_attributes = dict(element.attrib)
+                    elif element.tag in GROUPS:
+                        action = element.tag
+                    elif element.tag in OBJECT_TYPES:
+                        object_element = element
+                    continue
 
-                element.clear()
-                object_element = None
-            elif element.tag in {"create", "modify", "delete"}:
-                action = None
+                if element.tag in OBJECT_TYPES and object_element is element:
+                    key = osm_key(element)
+                    is_root = matches(element, args.prefix)
+                    known_root = key in roots
+                    known_dependency = key in dependencies
+                    object_refs = set(references(element))
 
-    delta_handle.close()
+                    if action == "delete":
+                        if known_root or known_dependency:
+                            emit("delete", element)
+                            event("remove", key, known_root)
+                        roots.discard(key)
+                        dependencies.discard(key)
+                        refs.pop(key, None)
+                    elif is_root:
+                        emit(action or "modify", element)
+                        event("add", key, True)
+                        roots.add(key)
+                        refs[key] = object_refs
+                        promote(key, dependencies, refs)
+                    elif known_root or known_dependency:
+                        # A matching tag was removed from a root. Keep the
+                        # object if another root uses it as a dependency.
+                        roots.discard(key)
+                        if known_dependency:
+                            emit(action or "modify", element)
+                            event("add", key, False)
+                            refs[key] = object_refs
+                            promote(key, dependencies, refs)
+                        else:
+                            refs.pop(key, None)
+                            emit("delete", deletion_element(element))
+                            event("remove", key, True)
 
-    if groups_open:
-        output.write(b"</create>\n</modify>\n</delete>\n</osmChange>\n")
+                    element.clear()
+                    object_element = None
+                elif element.tag in GROUPS:
+                    action = None
+
+        # Persist the new membership graph only after the caller has applied
+        # all emitted OSM changes successfully.
+        with args.delta.open("w", encoding="utf-8") as delta_handle:
+            for item in events:
+                delta_handle.write(json.dumps(item, separators=(",", ":")) + "\n")
+            if events:
+                delta_handle.write(
+                    json.dumps(
+                        {"op": "state", "state": serialized_state(roots, dependencies, refs)},
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+
+        output = sys.stdout.buffer
+        output.write(b"<?xml version='1.0' encoding='UTF-8'?>\n")
+        output.write(xml_start(root_tag or "osmChange", root_attributes))
+        for group in GROUPS:
+            output.write(f"<{group}>\n".encode("ascii"))
+            output_files[group].seek(0)
+            while chunk := output_files[group].read(1024 * 1024):
+                output.write(chunk)
+            output.write(f"</{group}>\n".encode("ascii"))
+        output.write(b"</osmChange>\n")
+    finally:
+        for handle in output_files.values():
+            handle.close()
     return 0
 
 
