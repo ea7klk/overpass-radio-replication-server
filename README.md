@@ -140,6 +140,12 @@ replicator treats that entity as deleted. For startup entries in
 queued root; it does not retry that terminal not-found result. Other query
 failures remain queued for retry.
 
+When one replication file discovers multiple roots, their public queries run in
+parallel using `overpass_query_workers` (default `4`). Local Overpass writes
+remain serialized in root order. The replication prefetch workers continue
+downloading later files while filtering, querying, and applying the current
+file.
+
 When a change file introduces a new dependency, the source `.osc.gz` is
 re-read locally with the newly discovered IDs seeded into the filter. This
 handles references that occur earlier in the same change file without

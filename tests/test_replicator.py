@@ -3,6 +3,8 @@ from io import BytesIO
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -148,6 +150,85 @@ class QuickCheckTest(unittest.TestCase):
             self.assertEqual(result["sequence"], 1816)
             self.assertFalse(source.exists())
             self.assertEqual(json.loads(catalog.read_text())["dependencies"], ["node:1"])
+
+    def test_public_root_queries_run_in_parallel_before_ordered_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "change.osc.gz"
+            catalog = root / "catalog.json"
+            source.write_bytes(gzip.compress(b"<osmChange/>"))
+            config = {
+                "daily_base_url": "https://example.test/day",
+                "work_dir": str(root / "work"),
+                "membership_file": str(root / "membership.json"),
+                "catalog_file": str(catalog),
+                "tag_key_prefix": "communication:amateur_radio",
+                "overpass_update_from_dir": "/bin/true",
+                "db_dir": str(root / "db"),
+                "overpass_query_workers": 2,
+            }
+            downloaded = DownloadedChange(
+                source,
+                {"sequence": 1816, "timestamp": "2026-09-15T12:00:00Z"},
+                0.1,
+            )
+            active = 0
+            maximum_active = 0
+            active_lock = threading.Lock()
+            write_order: list[str] = []
+
+            def fake_filter(_config, _source, _membership, filtered, delta, _include):
+                filtered.write_text("<osmChange/>", encoding="utf-8")
+                delta.write_text(
+                    "\n".join(
+                        json.dumps({"op": "add", "id": key, "root": True})
+                        for key in ("node:10", "node:11")
+                    )
+                    + "\n"
+                    + json.dumps(
+                        {
+                            "op": "state",
+                            "state": {"roots": ["node:10", "node:11"], "dependencies": []},
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                return 0.1
+
+            def fake_query(_config, root_key, known_keys, output_path):
+                del known_keys
+                nonlocal active, maximum_active
+                with active_lock:
+                    active += 1
+                    maximum_active = max(maximum_active, active)
+                time.sleep(0.05)
+                with active_lock:
+                    active -= 1
+                return RemoteRefresh(
+                    output_path,
+                    {root_key: f'<node id="{root_key.split(":")[1]}" lat="40" lon="-3"/>'.encode()},
+                    {root_key: set()},
+                    {},
+                    {},
+                    0.05,
+                )
+
+            def fake_update(_config, osc_path, _timestamp, description):
+                write_order.append(description)
+                self.assertTrue(osc_path.exists())
+
+            with (
+                patch("radio_overpass.replicator.quick_check", return_value="tag prefix"),
+                patch("radio_overpass.replicator.gzip_contains", return_value=False),
+                patch("radio_overpass.replicator.filter_file", side_effect=fake_filter),
+                patch("radio_overpass.replicator.query_overpass", side_effect=fake_query),
+                patch("radio_overpass.replicator.update_database", side_effect=fake_update),
+            ):
+                process_one(config, "day", downloaded)
+
+            self.assertEqual(maximum_active, 2)
+            self.assertEqual(len(write_order), 2)
 
     def test_public_overpass_query_returns_root_dependencies_and_dependents(self):
         class Response(BytesIO):

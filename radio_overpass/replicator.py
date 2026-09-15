@@ -395,6 +395,26 @@ def refresh_root(
         known_keys,
         root_directory / "remote.osc",
     )
+    merged = apply_remote_refresh(
+        config,
+        root_key,
+        refresh,
+        state,
+        timestamp,
+        context,
+    )
+    return refresh, merged
+
+
+def apply_remote_refresh(
+    config: dict[str, Any],
+    root_key: str,
+    refresh: RemoteRefresh,
+    state: dict[str, Any],
+    timestamp: str,
+    context: str,
+) -> dict[str, Any]:
+    """Write one completed public query result in catalog/database order."""
     update_database(
         config,
         refresh.osm_path or refresh.path,
@@ -404,7 +424,7 @@ def refresh_root(
     merged = merge_remote_state(state, {root_key}, refresh)
     atomic_json(catalog_path(config), merged)
     log_remote_objects(refresh, {root_key}, context)
-    return refresh, merged
+    return merged
 
 
 def process_pending_membership(config: dict[str, Any]) -> None:
@@ -941,21 +961,61 @@ def process_one(
                 remote_seconds = 0.0
                 current_state = old_state
                 last_remote_path = remote_dir / "remote.osc"
-                for root_key in sorted(root_keys):
-                    refresh, current_state = refresh_root(
-                        config,
-                        root_key,
-                        current_state,
-                        remote_dir,
-                        state["timestamp"],
-                        f"{cadence}/{sequence}",
-                    )
-                    remote_objects.update(refresh.objects)
-                    remote_refs.update(refresh.refs)
-                    remote_names.update(refresh.names)
-                    remote_tags.update(refresh.tags)
-                    remote_seconds += refresh.seconds
-                    last_remote_path = refresh.path
+                known_keys = set(current_state.get("roots", [])) | set(
+                    current_state.get("dependencies", [])
+                )
+                query_workers = max(
+                    1,
+                    min(
+                        len(root_keys),
+                        int(config.get("overpass_query_workers", 4)),
+                    ),
+                )
+                LOG.info(
+                    "starting %d public Overpass query worker(s) for %d root(s); "
+                    "replication prefetch/download continues concurrently",
+                    query_workers,
+                    len(root_keys),
+                )
+                query_futures: dict[str, Future[RemoteRefresh]] = {}
+                with ThreadPoolExecutor(max_workers=query_workers) as query_executor:
+                    for root_key in sorted(root_keys):
+                        kind, object_id = root_key_parts(root_key)
+                        root_directory = remote_dir / f"{kind}-{object_id}"
+                        root_directory.mkdir(parents=True, exist_ok=True)
+                        query_futures[root_key] = query_executor.submit(
+                            query_overpass,
+                            config,
+                            root_key,
+                            known_keys,
+                            root_directory / "remote.osc",
+                        )
+
+                    for root_key in sorted(root_keys):
+                        refresh = query_futures[root_key].result()
+                        # Queries run concurrently, but local writes remain
+                        # ordered. Reclassify objects against the state after
+                        # each preceding root so overlapping results are safe.
+                        remote_osc(
+                            refresh.path,
+                            refresh.objects,
+                            set(current_state.get("roots", []))
+                            | set(current_state.get("dependencies", [])),
+                        )
+                        current_state = apply_remote_refresh(
+                            config,
+                            root_key,
+                            refresh,
+                            current_state,
+                            state["timestamp"],
+                            f"{cadence}/{sequence}",
+                        )
+                        remote_objects.update(refresh.objects)
+                        remote_refs.update(refresh.refs)
+                        remote_names.update(refresh.names)
+                        remote_tags.update(refresh.tags)
+                        remote_seconds += refresh.seconds
+                        last_remote_path = refresh.path
                 remote_refresh = RemoteRefresh(
                     last_remote_path,
                     remote_objects,
