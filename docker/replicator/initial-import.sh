@@ -38,6 +38,7 @@ temporary_metadata="$temporary_dir/initial-snapshot.json"
 
 echo "Filtering initial PBF snapshot $pbf_path"
 osmium tags-filter \
+    --progress \
     --remove-tags \
     --output="$filtered_xml" \
     "$pbf_path" \
@@ -52,10 +53,11 @@ python -m radio_overpass.initial_import \
     --prefix "$tag_prefix"
 
 echo "Importing filtered initial snapshot into Overpass"
-/opt/overpass/bin/update_database \
+python -m radio_overpass.import_progress "$filtered_xml" \
+    | /opt/overpass/bin/update_database \
     --db-dir="$db_dir" \
-    --meta=no \
-    < "$filtered_xml"
+    --meta=no
+
 test -f "$db_dir/nodes.map"
 
 mv "$temporary_catalog" "$catalog_file"
