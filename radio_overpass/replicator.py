@@ -134,19 +134,11 @@ def element_references(element: ET._Element) -> list[str]:
     return []
 
 
-def overpass_query(root_keys: set[str], timeout: int) -> bytes:
-    grouped: dict[str, list[str]] = {kind: [] for kind in OBJECT_TYPES}
-    for key in sorted(root_keys):
-        kind, object_id = root_key_parts(key)
-        grouped[kind].append(object_id)
-    selectors = "\n".join(
-        f"  {kind}(id:{','.join(ids)});"
-        for kind, ids in grouped.items()
-        if ids
-    )
+def overpass_query(root_key: str, timeout: int) -> bytes:
+    kind, object_id = root_key_parts(root_key)
     query = f"""[out:xml][timeout:{timeout}];
 (
-{selectors}
+  {kind}(id:{object_id});
 );
 (._;>;);
 (._;<<;);
@@ -192,12 +184,10 @@ def remote_osc(
 
 def query_overpass(
     config: dict[str, Any],
-    root_keys: set[str],
+    root_key: str,
     known_keys: set[str],
     output_path: Path,
 ) -> RemoteRefresh:
-    if not root_keys:
-        raise ValueError("at least one root is required for an Overpass query")
     endpoint = config.get(
         "overpass_query_url",
         "https://overpass.private.coffee/api/interpreter",
@@ -206,7 +196,7 @@ def query_overpass(
     retries = int(config.get("overpass_query_retries", 3))
     retry_wait = int(config["retry_initial_seconds"])
     max_wait = int(config["retry_max_seconds"])
-    query = overpass_query(root_keys, timeout)
+    query = overpass_query(root_key, timeout)
     last_error: Exception | None = None
 
     for attempt in range(retries + 1):
@@ -261,12 +251,12 @@ def query_overpass(
         except (OSError, urllib.error.HTTPError, ET.XMLSyntaxError, RuntimeError) as exc:
             last_error = exc
         else:
-            missing = sorted(root_keys - objects.keys())
+            missing = root_key not in objects
             if remarks:
                 last_error = RuntimeError("; ".join(remarks))
             elif missing:
                 last_error = RuntimeError(
-                    "Overpass response omitted requested root(s): " + ", ".join(missing)
+                    f"Overpass response omitted requested root: {root_key}"
                 )
             else:
                 remote_osc(output_path, objects, known_keys)
@@ -276,7 +266,7 @@ def query_overpass(
                     light_green_console(
                         f"Overpass query succeeded: {endpoint}; retrieved "
                         f"{len(objects)} object(s), including dependencies and dependents, "
-                        f"for {len(root_keys)} root(s) in {seconds:.1f}s"
+                        f"for root {root_key} in {seconds:.1f}s"
                     ),
                 )
                 return RemoteRefresh(output_path, objects, refs, names, tags, seconds)
@@ -285,8 +275,8 @@ def query_overpass(
             LOG.warning(
                 "%s",
                 red_console(
-                    f"Overpass query failed for {len(root_keys)} root(s): "
-                    f"{last_error}; retrying in {retry_wait}s"
+                    f"Overpass query failed for root {root_key}: {last_error}; "
+                    f"retrying in {retry_wait}s"
                 ),
             )
             time.sleep(retry_wait)
@@ -360,25 +350,33 @@ def log_remote_objects(
         LOG.info("%s", light_green_console(message))
 
 
-def refresh_roots(
+def refresh_root(
     config: dict[str, Any],
-    root_keys: set[str],
+    root_key: str,
     state: dict[str, Any],
-    output_path: Path,
+    output_directory: Path,
     timestamp: str,
     context: str,
 ) -> tuple[RemoteRefresh, dict[str, Any]]:
     known_keys = set(state.get("roots", [])) | set(state.get("dependencies", []))
-    refresh = query_overpass(config, root_keys, known_keys, output_path)
+    kind, object_id = root_key_parts(root_key)
+    root_directory = output_directory / f"{kind}-{object_id}"
+    root_directory.mkdir(parents=True, exist_ok=True)
+    refresh = query_overpass(
+        config,
+        root_key,
+        known_keys,
+        root_directory / "remote.osc",
+    )
     update_database(
         config,
         refresh.path,
         timestamp,
         description=f"public Overpass dependencies/dependents ({context})",
     )
-    merged = merge_remote_state(state, root_keys, refresh)
+    merged = merge_remote_state(state, {root_key}, refresh)
     atomic_json(catalog_path(config), merged)
-    log_remote_objects(refresh, root_keys, context)
+    log_remote_objects(refresh, {root_key}, context)
     return refresh, merged
 
 
@@ -404,22 +402,21 @@ def process_pending_membership(config: dict[str, Any]) -> None:
         atomic_json(catalog_path(config), catalog)
     work_dir = Path(config["work_dir"])
     work_dir.mkdir(parents=True, exist_ok=True)
-    batch_size = max(1, int(config.get("overpass_query_batch_size", 50)))
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     with tempfile.TemporaryDirectory(prefix="membership-", dir=work_dir) as directory:
         temp_dir = Path(directory)
         while pending:
-            batch = set(pending[:batch_size])
-            refresh, catalog = refresh_roots(
+            root_key = pending[0]
+            refresh, catalog = refresh_root(
                 config,
-                batch,
+                root_key,
                 catalog,
-                temp_dir / "membership.osc",
+                temp_dir,
                 timestamp,
                 "startup membership",
             )
             del refresh
-            pending = pending[batch_size:]
+            pending = pending[1:]
             if pending:
                 atomic_json(pending_path, pending)
             else:
@@ -852,16 +849,37 @@ def process_one(
                     enqueue_pending(pending_path, root_key)
                 remote_dir = temp_path / "remote"
                 remote_dir.mkdir()
-                remote_refresh, _ = refresh_roots(
-                    config,
-                    root_keys,
-                    old_state,
-                    remote_dir / "remote.osc",
-                    state["timestamp"],
-                    f"{cadence}/{sequence}",
-                )
-                for root_key in root_keys:
+                remote_objects: dict[str, bytes] = {}
+                remote_refs: dict[str, set[str]] = {}
+                remote_names: dict[str, str] = {}
+                remote_tags: dict[str, list[dict[str, str]]] = {}
+                remote_seconds = 0.0
+                current_state = old_state
+                last_remote_path = remote_dir / "remote.osc"
+                for root_key in sorted(root_keys):
+                    refresh, current_state = refresh_root(
+                        config,
+                        root_key,
+                        current_state,
+                        remote_dir,
+                        state["timestamp"],
+                        f"{cadence}/{sequence}",
+                    )
+                    remote_objects.update(refresh.objects)
+                    remote_refs.update(refresh.refs)
+                    remote_names.update(refresh.names)
+                    remote_tags.update(refresh.tags)
+                    remote_seconds += refresh.seconds
+                    last_remote_path = refresh.path
                     acknowledge_pending(pending_path, root_key)
+                remote_refresh = RemoteRefresh(
+                    last_remote_path,
+                    remote_objects,
+                    remote_refs,
+                    remote_names,
+                    remote_tags,
+                    remote_seconds,
+                )
 
             has_database_changes = any(item["op"] in {"add", "remove"} for item in events)
             apply_started = time.monotonic()

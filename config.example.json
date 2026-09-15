@@ -16,7 +16,6 @@
   "overpass_query_url": "https://overpass.private.coffee/api/interpreter",
   "overpass_query_timeout": 180,
   "overpass_query_retries": 3,
-  "overpass_query_batch_size": 50,
   "tag_key_prefix": "communication:amateur_radio",
   "meta_mode": "--meta=no"
 }

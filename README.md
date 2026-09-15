@@ -117,11 +117,12 @@ local update leaves the entry queued for the next restart.
 
 The public query endpoint defaults to
 `https://overpass.private.coffee/api/interpreter` and can be changed with
-`overpass_query_url`. Queries are POST requests containing both recursive
-directions, `>;` and `<<;`. The response must have a successful HTTP status,
-valid OSM XML, no Overpass `<remark>`/`<error>`, and must contain every
-requested root. The replicator retries unsuccessful queries and does not
-advance the replication checkpoint until the local update succeeds.
+`overpass_query_url`. Each root is queried individually; queries are POST
+requests containing both recursive directions, `>;` and `<<;`. The response
+must have a successful HTTP status, valid OSM XML, no Overpass
+`<remark>`/`<error>`, and must contain the requested root. The replicator
+retries unsuccessful queries and does not advance the replication checkpoint
+until the local update succeeds.
 
 When a change file introduces a new dependency, the source `.osc.gz` is
 re-read locally with the newly discovered IDs seeded into the filter. This
@@ -283,8 +284,7 @@ Set these values in `/etc/overpass-radio.json`:
   "catalog_file": "/srv/overpass-radio/catalog.json",
   "overpass_query_url": "https://overpass.private.coffee/api/interpreter",
   "overpass_query_timeout": 180,
-  "overpass_query_retries": 3,
-  "overpass_query_batch_size": 50
+  "overpass_query_retries": 3
 }
 ```
 

@@ -175,7 +175,7 @@ class QuickCheckTest(unittest.TestCase):
         with patch("radio_overpass.replicator.urllib.request.urlopen", return_value=response) as urlopen:
             with tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / "remote.osc"
-                refresh = query_overpass(config, {"node:1"}, set(), output)
+                refresh = query_overpass(config, "node:1", set(), output)
                 remote_xml = output.read_bytes()
 
         self.assertEqual(set(refresh.objects), {"node:1", "node:2", "way:9"})
@@ -194,7 +194,6 @@ class QuickCheckTest(unittest.TestCase):
                 "membership_file": str(pending),
                 "catalog_file": str(catalog),
                 "work_dir": str(root / "work"),
-                "overpass_query_batch_size": 50,
             }
             refresh = RemoteRefresh(
                 root / "remote.osc",
