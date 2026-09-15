@@ -5,7 +5,14 @@ metadata:
   namespace: overpass-radio
 data:
   zz-overpass-radio-cors.conf: |
+    <Directory "/opt/overpass/cgi-bin/">
+        Require all granted
+    </Directory>
+
     <IfModule mod_headers.c>
         Header always unset Access-Control-Allow-Origin
-        Header always set Access-Control-Allow-Origin "https://potamap.ea7klk.es" env=radio_cors_allowed
+        Header always set Access-Control-Allow-Origin "*"
+        Header always set Access-Control-Allow-Methods "GET, POST, OPTIONS"
+        Header always set Access-Control-Allow-Headers "Content-Type, Accept, X-Requested-With"
+        Header always set Access-Control-Max-Age "600"
     </IfModule>
