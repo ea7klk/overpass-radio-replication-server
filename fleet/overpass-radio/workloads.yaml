@@ -24,7 +24,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
       - name: initialize-overpass-from-pbf
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.7
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.8
         imagePullPolicy: IfNotPresent
         command:
         - /usr/local/bin/radio-overpass-initial-import
@@ -154,7 +154,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
       - name: wait-for-overpass
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.7
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.8
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -169,7 +169,7 @@ spec:
           done
       containers:
       - name: replicator
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.7
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.8
         imagePullPolicy: IfNotPresent
         env:
         - name: CONFIG_PATH

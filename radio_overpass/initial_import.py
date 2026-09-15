@@ -95,15 +95,16 @@ def build_catalog(xml_path: Path, output_path: Path, prefix: str) -> tuple[int, 
     roots: set[str] = set()
     objects: set[str] = set()
     refs: dict[str, list[str]] = {}
-    with ET.iterparse(
-        str(xml_path),
-        events=("end",),
-        tag=OBJECT_TYPES,
-        huge_tree=True,
-        resolve_entities=False,
-        load_dtd=False,
-        no_network=True,
-    ) as stream:
+    with xml_path.open("rb") as source:
+        stream = ET.iterparse(
+            source,
+            events=("end",),
+            tag=OBJECT_TYPES,
+            huge_tree=True,
+            resolve_entities=False,
+            load_dtd=False,
+            no_network=True,
+        )
         for _, element in stream:
             key = element_key(element)
             objects.add(key)
