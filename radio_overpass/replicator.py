@@ -1384,16 +1384,26 @@ class CatalogQueryPool:
     def has_ready(self) -> bool:
         return any(future.done() for future in self.futures.values())
 
-    def drain_ready(self, *, wait: bool = False, reschedule: bool = True) -> None:
+    def drain_ready(
+        self,
+        *,
+        wait: bool = False,
+        reschedule: bool = True,
+        max_items: int | None = None,
+    ) -> None:
         """Apply completed results in catalog order; never write from workers."""
         if reschedule:
             self._refresh_catalog_roots()
             self._schedule_due()
+        processed = 0
         while self.futures:
+            if max_items is not None and processed >= max_items:
+                return
             root_key, future = next(iter(self.futures.items()))
             if not wait and not future.done():
                 return
             del self.futures[root_key]
+            processed += 1
             try:
                 refresh = future.result()
             except OverpassRootNotFoundError:
@@ -1552,7 +1562,12 @@ def catch_up(
                         candidate = DispatcherMaintenance(config)
                         candidate.__enter__()
                         maintenance = candidate
-                    catalog_queries.drain_ready()
+                    catalog_queries.drain_ready(
+                        max_items=max(
+                            1,
+                            int(config.get("catalog_query_max_ready_per_cycle", 1)),
+                        )
+                    )
                 target = latest(
                     base,
                     int(config["retry_initial_seconds"]),
@@ -1574,7 +1589,12 @@ def catch_up(
                     apply_database=apply_database,
                 )
                 if catalog_queries is not None:
-                    catalog_queries.drain_ready()
+                    catalog_queries.drain_ready(
+                        max_items=max(
+                            1,
+                            int(config.get("catalog_query_max_ready_per_cycle", 1)),
+                        )
+                    )
                 checkpoint = {
                     "phase": checkpoint.get("phase", "apply"),
                     "cadence": cadence,
