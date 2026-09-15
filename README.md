@@ -75,6 +75,212 @@ re-streamed with the newly discovered IDs seeded into the filter. This handles
 references that occur earlier in the same change file without retaining the
 upstream file on disk.
 
+## Debian / Ubuntu server installation
+
+The following is a source installation of Overpass osm-3s and a package
+installation of Osmium. It assumes a dedicated data volume mounted at
+`/srv`, an administrator account with `sudo`, and a public DNS name if the API
+will be exposed to the Internet. This project has no Python packages beyond
+the standard library; `osmium-tool` is useful for diagnostics and optional
+offline OSM processing but is not required by the Python replicator itself.
+
+### Install prerequisites
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  ca-certificates curl wget git \
+  build-essential autoconf automake libtool \
+  expat libexpat1-dev zlib1g-dev liblz4-dev \
+  python3 osmium-tool apache2
+
+python3 --version
+osmium --version
+```
+
+`osmium-tool` is available in current Debian releases and many Ubuntu
+releases. If APT cannot find it, install it from the distribution repository
+appropriate for the server rather than mixing packages from another release.
+
+### Build and install Overpass
+
+Overpass is kept under `/opt/overpass` so its `bin` and `cgi-bin` directories
+remain together, as expected by the upstream scripts:
+
+```bash
+cd /tmp
+wget -O osm-3s_latest.tar.gz \
+  https://dev.overpass-api.de/releases/osm-3s_latest.tar.gz
+tar -xzf osm-3s_latest.tar.gz
+cd osm-3s_*
+
+./configure --enable-lz4
+make -j"$(nproc)"
+chmod 755 bin/*.sh cgi-bin/*
+
+sudo install -d /opt/overpass
+sudo cp -a bin cgi-bin /opt/overpass/
+/opt/overpass/bin/osm3s_query --help >/dev/null
+```
+
+Do not copy only individual Overpass binaries: keep `bin` and `cgi-bin`
+together. The upstream installation guide recommends this layout and build
+procedure.
+
+### Create the service account and directories
+
+```bash
+sudo adduser --system --group --home /srv/overpass-radio \
+  --no-create-home overpass-radio
+sudo install -d -o overpass-radio -g overpass-radio \
+  /srv/overpass-radio/db \
+  /srv/overpass-radio/work
+sudo chmod 755 /srv /srv/overpass-radio
+
+sudo cp config.example.json /etc/overpass-radio.json
+sudo editor /etc/overpass-radio.json
+```
+
+Set these values in `/etc/overpass-radio.json`:
+
+```json
+{
+  "db_dir": "/srv/overpass-radio/db",
+  "overpass_update_from_dir": "/opt/overpass/bin/update_from_dir",
+  "work_dir": "/srv/overpass-radio/work",
+  "state_file": "/srv/overpass-radio/state.json",
+  "membership_file": "/srv/overpass-radio/membership.json"
+}
+```
+
+Leave both start-sequence values `null` for the initial historical replay.
+The first run can take a long time. Do not use Overpass's `download_clone.sh`
+for this project: it would create a complete worldwide database instead of
+the filtered database built by this repository.
+
+### Start Overpass and the replicator with systemd
+
+Clone this repository to a stable location:
+
+```bash
+sudo git clone https://github.com/ea7klk/overpass-radio-replication-server \
+  /opt/overpass-radio-replication-server
+sudo chown -R overpass-radio:overpass-radio \
+  /opt/overpass-radio-replication-server
+```
+
+Create the dispatcher unit:
+
+```bash
+sudo editor /etc/systemd/system/overpass-radio-dispatcher.service
+```
+
+```ini
+[Unit]
+Description=Overpass radio database dispatcher
+After=local-fs.target
+
+[Service]
+User=overpass-radio
+Group=overpass-radio
+UMask=0007
+ExecStart=/opt/overpass/bin/dispatcher --osm-base --db-dir=/srv/overpass-radio/db --allow-duplicate-queries=yes
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Create the replication unit:
+
+```bash
+sudo editor /etc/systemd/system/overpass-radio-replicator.service
+```
+
+```ini
+[Unit]
+Description=Filtered OSM replication for Overpass radio data
+After=network-online.target overpass-radio-dispatcher.service
+Wants=network-online.target
+Requires=overpass-radio-dispatcher.service
+
+[Service]
+User=overpass-radio
+Group=overpass-radio
+WorkingDirectory=/opt/overpass-radio-replication-server
+ExecStart=/usr/bin/python3 -m radio_overpass.replicator --config=/etc/overpass-radio.json
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable the dispatcher first, then the historical replay:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now overpass-radio-dispatcher.service
+sudo systemctl enable --now overpass-radio-replicator.service
+
+systemctl status overpass-radio-dispatcher.service
+systemctl status overpass-radio-replicator.service
+journalctl -u overpass-radio-replicator.service -f
+```
+
+The replicator only advances its checkpoint after a successful database
+update. If it is stopped or a download fails, restart the same unit; it will
+retry the current sequence.
+
+### Optional Apache CGI endpoint
+
+Apache is not needed for command-line queries, but it is the simplest way to
+serve the Overpass API over HTTP. Grant Apache read/traverse access to the
+database socket and files without granting it write access:
+
+```bash
+sudo usermod -aG overpass-radio www-data
+sudo chmod 2750 /srv/overpass-radio/db
+sudo a2enmod cgi env
+sudo editor /etc/apache2/conf-available/overpass-radio.conf
+```
+
+Use this configuration, replacing `api.example.org` with the server name:
+
+```apache
+ServerName api.example.org
+
+ScriptAlias /api/ "/opt/overpass/cgi-bin/"
+<Directory "/opt/overpass/cgi-bin/">
+    AllowOverride None
+    Options +ExecCGI -MultiViews +SymLinksIfOwnerMatch
+    Require all granted
+    SetEnv OVERPASS_DB_DIR /srv/overpass-radio/db
+</Directory>
+```
+
+Enable the configuration and restart Apache so the new group membership is
+loaded:
+
+```bash
+sudo a2enconf overpass-radio
+sudo systemctl reload apache2
+```
+
+Test locally:
+
+```bash
+curl --fail --get http://127.0.0.1/api/interpreter \
+  --data-urlencode 'data=[out:json];nwr["communication:amateur_radio"];out geom;'
+```
+
+Put TLS and authentication/rate limiting in front of a publicly reachable
+endpoint. Do not expose the unrestricted Overpass interpreter to the public
+Internet unless that is intentional; the database includes dependency
+objects needed for geometry, even though normal client queries select only
+the radio-tagged roots.
+
 ## Checkpointing and retries
 
 The checkpoint is written atomically after a successful Overpass update. A
@@ -91,8 +297,3 @@ plus one. It never skips a missing or temporarily unavailable file.
 - Minute replication: https://planet.openstreetmap.org/replication/minute/
 - Osmium tag-filter syntax: https://docs.osmcode.org/osmium/latest/osmium-tags-filter.html
 - Overpass installation and update model: https://dev.overpass-api.de/overpass-doc/en/more_info/setup.html
-
-## Security
-
-Do not put GitHub tokens in this repository, configuration, shell history, or
-logs. The PAT supplied during setup must be revoked and replaced.
