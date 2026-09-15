@@ -32,13 +32,13 @@ dependency object, plus removals, with the cadence and sequence number.
 It also logs a completion line for every source file, for example:
 
 ```text
-completed day replication file ...: passes=1 download=2.4s filter=2.3s apply=0.8s total=3.2s
+completed day replication file ...: passes=1 download=2.4s filter=2.3s apply=0.8s process=3.2s
 ```
 
-The download and filter timings overlap because the OSC stream is piped
-directly from `curl`; they should not be added together. Multiple passes mean
-the file was re-streamed to resolve dependencies introduced earlier in that
-same file.
+Download time overlaps with processing of the preceding file, but filtering
+and applying a particular file happen after its download completes. Multiple
+passes mean the local file was re-read to resolve dependencies introduced
+earlier in that same file; they do not cause additional downloads.
 
 The standard OSM replication feed is OsmChange XML (`.osc.gz`), not PBF. The
 Overpass updater consumes the filtered OSC XML.
@@ -81,9 +81,9 @@ their referencing roots appear. The implementation persists the root set,
 dependency set, and known reference graph in `membership_file`.
 
 When a change file introduces a new dependency, the source `.osc.gz` is
-re-streamed with the newly discovered IDs seeded into the filter. This handles
-references that occur earlier in the same change file without retaining the
-upstream file on disk.
+re-read locally with the newly discovered IDs seeded into the filter. This
+handles references that occur earlier in the same change file without
+downloading the source again.
 
 ## Debian / Ubuntu server installation
 
@@ -311,9 +311,11 @@ failed download or failed database update leaves the checkpoint unchanged, so
 the same sequence is retried. Temporary filtered batches are removed after a
 successful application and are safe to remove after an interrupted run.
 
-OSC streams are fetched with the system `curl` command, with redirects and
-transient retries enabled, then piped directly into the Python filter. This
-also avoids Python HTTPS/proxy interoperability problems on some servers.
+OSC files are fetched with the system `curl` command, with redirects and
+transient retries enabled. While one file is being filtered and applied, up to
+the next two files are downloaded into a temporary prefetch queue. A source
+file is removed after processing, and dependency re-reads use that same local
+temporary file.
 
 The updater verifies that each next sequence is exactly the previous sequence
 plus one. It never skips a missing or temporarily unavailable file.
