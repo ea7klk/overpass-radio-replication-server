@@ -8,15 +8,19 @@ from pathlib import Path
 
 
 class OscFilterTest(unittest.TestCase):
-    def run_filter(self, osc: bytes, state: dict[str, object] | None = None):
+    def run_filter(
+        self,
+        osc: bytes,
+        state: dict[str, object] | None = None,
+        include: list[str] | None = None,
+    ):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             membership = root / "membership.json"
             delta = root / "delta.jsonl"
             if state is not None:
                 membership.write_text(json.dumps(state), encoding="utf-8")
-            result = subprocess.run(
-                [
+            command = [
                     sys.executable,
                     "-m",
                     "radio_overpass.osc_filter",
@@ -24,7 +28,11 @@ class OscFilterTest(unittest.TestCase):
                     str(membership),
                     "--delta",
                     str(delta),
-                ],
+                ]
+            for dependency_id in include or []:
+                command.extend(("--include", dependency_id))
+            result = subprocess.run(
+                command,
                 input=gzip.compress(osc),
                 stdout=subprocess.PIPE,
                 check=True,
@@ -47,6 +55,14 @@ class OscFilterTest(unittest.TestCase):
         output, delta = self.run_filter(osc, state)
         self.assertIn("<node id=\"1\"", output)
         self.assertIn('"op":"add","id":"node:1","root":false', delta)
+
+    def test_seeded_dependency_can_be_replayed(self):
+        osc = b'''<?xml version="1.0"?><osmChange version="0.6"><create>
+          <node id="1" lat="40" lon="-3" version="1"/>
+        </create></osmChange>'''
+        output, delta = self.run_filter(osc, include=["node:1"])
+        self.assertIn("<node id=\"1\"", output)
+        self.assertIn('"id":"node:1"', delta)
 
 
 if __name__ == "__main__":
