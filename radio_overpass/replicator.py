@@ -45,12 +45,11 @@ class DispatcherMaintenance:
     """Coordinate database writers with the dispatcher through a shared file."""
 
     def __init__(self, config: dict[str, Any]) -> None:
-        db_dir = Path(
-            config.get(
-                "db_dir",
-                Path(config["membership_file"]).parent / "db",
-            )
-        )
+        configured_db_dir = config.get("db_dir")
+        if configured_db_dir:
+            db_dir = Path(configured_db_dir)
+        else:
+            db_dir = Path(config["membership_file"]).parent / "db"
         self.path = Path(
             config.get(
                 "maintenance_lock",
