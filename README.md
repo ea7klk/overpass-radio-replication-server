@@ -1,20 +1,34 @@
 # Filtered Overpass replication for `communication:amateur_radio*`
 
 This project builds a small Overpass API database by replaying OSM replication
-changes, retaining only nodes, ways, and relations with a tag key beginning
-with `communication:amateur_radio`.
+changes. Matching nodes, ways, and relations with a tag key beginning with
+`communication:amateur_radio` are retained as roots, together with the
+reference closure needed to resolve their geometry and members.
 
 It does not retain downloaded upstream `.osc.gz` files. A change is fetched,
 filtered into a short-lived local batch, applied to Overpass, and then deleted.
 The raw upstream change is never written to disk.
 
-## Important scope
+## Reference-complete scope
 
-This is a **tagged-object-only** database. Referenced nodes and members are
-not retained unless they themselves match the prefix. Consequently, queries
-for matching objects work, but `out geom` for a matching way/relation may not
-have complete coordinates. Add a dependency-aware extraction layer before
-using this in a geometry-dependent service.
+The database contains matching roots plus untagged dependencies. A way causes
+its node references to be retained; a relation causes its member objects to be
+retained, and known dependency references are followed recursively. Updates to
+dependency nodes, ways, and relations are applied as well. Clients should
+select roots explicitly, for example:
+
+```overpass
+[out:json];
+nwr["communication:amateur_radio"];
+out geom;
+```
+
+The dependency set is implementation data. If the endpoint must prevent
+clients from querying dependencies directly, put a query-restricting proxy in
+front of Overpass.
+
+For each successful sequence, the updater logs every applied root and
+dependency object, plus removals, with the cadence and sequence number.
 
 The standard OSM replication feed is OsmChange XML (`.osc.gz`), not PBF. The
 Overpass updater consumes the filtered OSC XML.
@@ -51,6 +65,10 @@ The first run discovers the oldest daily sequence by traversing the public
 daily stream through the latest published daily sequence. It resolves the
 corresponding minutely sequence by binary-searching per-sequence state files
 and continues polling the minute stream. The minute index is not enumerated.
+
+Starting from the oldest daily sequence allows dependencies to be promoted as
+their referencing roots appear. The implementation persists the root set,
+dependency set, and known reference graph in `membership_file`.
 
 ## Checkpointing and retries
 
