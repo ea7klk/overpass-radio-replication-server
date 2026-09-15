@@ -28,7 +28,7 @@ data:
       "meta_mode": "--meta=no",
       "catalog_query_workers": 4,
       "catalog_query_interval_seconds": 30,
-      "catalog_query_max_ready_per_cycle": 1,
+      "catalog_query_batch_size": 20,
       "maintenance_lock": "/srv/overpass-radio/.maintenance.lock",
       "maintenance_lock_timeout_seconds": 300,
       "maintenance_lock_stale_seconds": 1800,

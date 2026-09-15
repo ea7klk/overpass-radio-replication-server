@@ -1547,6 +1547,10 @@ def catch_up(
                 )
             ),
         )
+        catalog_query_batch_size = max(
+            1,
+            int(config.get("catalog_query_batch_size", 20)),
+        )
         maintenance: DispatcherMaintenance | None = None
         processed_in_batch = 0
         try:
@@ -1563,10 +1567,7 @@ def catch_up(
                         candidate.__enter__()
                         maintenance = candidate
                     catalog_queries.drain_ready(
-                        max_items=max(
-                            1,
-                            int(config.get("catalog_query_max_ready_per_cycle", 1)),
-                        )
+                        max_items=catalog_query_batch_size
                     )
                 target = latest(
                     base,
@@ -1590,10 +1591,7 @@ def catch_up(
                 )
                 if catalog_queries is not None:
                     catalog_queries.drain_ready(
-                        max_items=max(
-                            1,
-                            int(config.get("catalog_query_max_ready_per_cycle", 1)),
-                        )
+                        max_items=catalog_query_batch_size
                     )
                 checkpoint = {
                     "phase": checkpoint.get("phase", "apply"),
