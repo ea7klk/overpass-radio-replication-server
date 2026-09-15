@@ -1,0 +1,188 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: overpass-radio-overpass
+  namespace: overpass-radio
+  labels:
+    app.kubernetes.io/name: overpass-radio-overpass
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: overpass-radio-overpass
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: overpass-radio-overpass
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+      - name: registry-credentials
+      nodeSelector:
+        kubernetes.io/hostname: spainip-k3s
+      containers:
+      - name: overpass
+        image: ghcr.io/ea7klk/overpass-radio-overpass:0.0.1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ALLOWED_ORIGINS
+          value: https://potamap.ea7klk.es
+        - name: OVERPASS_DB_DIR
+          value: /srv/overpass-radio/db
+        ports:
+        - name: http
+          containerPort: 80
+          protocol: TCP
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - >-
+              curl --noproxy '*' --fail --silent --get
+              http://127.0.0.1/api/interpreter
+              --data-urlencode 'data=[out:json];node(0);out;' |
+              grep -q '"version"'
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 6
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - >-
+              curl --noproxy '*' --fail --silent --get
+              http://127.0.0.1/api/interpreter
+              --data-urlencode 'data=[out:json];node(0);out;' |
+              grep -q '"version"'
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 6
+        startupProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - >-
+              curl --noproxy '*' --fail --silent --get
+              http://127.0.0.1/api/interpreter
+              --data-urlencode 'data=[out:json];node(0);out;' |
+              grep -q '"version"'
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 360
+        resources:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+        volumeMounts:
+        - name: data
+          mountPath: /srv/overpass-radio
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: overpass-radio-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: overpass-radio-replicator
+  namespace: overpass-radio
+  labels:
+    app.kubernetes.io/name: overpass-radio-replicator
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: overpass-radio-replicator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: overpass-radio-replicator
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+      - name: registry-credentials
+      nodeSelector:
+        kubernetes.io/hostname: spainip-k3s
+      initContainers:
+      - name: wait-for-overpass
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.1
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        args:
+        - >-
+          until curl --noproxy '*' --fail --silent --get
+          http://overpass/api/interpreter
+          --data-urlencode 'data=[out:json];node(0);out;'; do
+            echo 'waiting for the local Overpass API';
+            sleep 5;
+          done
+      containers:
+      - name: replicator
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: CONFIG_PATH
+          value: /etc/overpass-radio.json
+        resources:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+        volumeMounts:
+        - name: data
+          mountPath: /srv/overpass-radio
+        - name: config
+          mountPath: /etc/overpass-radio.json
+          subPath: overpass-radio.json
+          readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: overpass-radio-data
+      - name: config
+        configMap:
+          name: overpass-radio-config
+          defaultMode: 0444
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: overpass
+  namespace: overpass-radio
+  labels:
+    app.kubernetes.io/name: overpass-radio-overpass
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: overpass-radio-overpass
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+    protocol: TCP
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: overpass-radio
+  namespace: overpass-radio
+spec:
+  entryPoints:
+  - websecure
+  routes:
+  - kind: Rule
+    match: Host(`overpass.ea7klk.es`)
+    services:
+    - name: overpass
+      port: 80
+  tls:
+    certResolver: acmeresolver

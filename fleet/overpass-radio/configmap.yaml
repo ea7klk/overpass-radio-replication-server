@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: overpass-radio-config
+  namespace: overpass-radio
+data:
+  overpass-radio.json: |
+    {
+      "db_dir": "/srv/overpass-radio/db",
+      "overpass_update_from_dir": "/opt/overpass/bin/update_from_dir",
+      "work_dir": "/srv/overpass-radio/work",
+      "state_file": "/srv/overpass-radio/state.json",
+      "membership_file": "/srv/overpass-radio/membership.json",
+      "catalog_file": "/srv/overpass-radio/catalog.json",
+      "daily_base_url": "https://planet.openstreetmap.org/replication/day/",
+      "minute_base_url": "https://planet.openstreetmap.org/replication/minute/",
+      "daily_start_sequence": 1572,
+      "daily_dependency_start_sequence": 1,
+      "minute_start_sequence": null,
+      "poll_seconds": 60,
+      "retry_initial_seconds": 15,
+      "retry_max_seconds": 900,
+      "overpass_query_url": "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+      "overpass_query_timeout": 180,
+      "overpass_query_retries": 3,
+      "overpass_query_batch_size": 50,
+      "tag_key_prefix": "communication:amateur_radio",
+      "meta_mode": "--meta=no",
+      "catalog_query_workers": 4,
+      "catalog_query_interval_seconds": 30
+    }

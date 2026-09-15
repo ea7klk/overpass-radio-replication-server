@@ -1,0 +1,5 @@
+defaultNamespace: overpass-radio
+kustomize:
+  dir: .
+helm:
+  takeOwnership: true
