@@ -32,7 +32,7 @@ dependency object, plus removals, with the cadence and sequence number.
 It also logs a completion line for every source file, for example:
 
 ```text
-completed day replication file ...: passes=1 download=2.4s filter=2.3s apply=0.8s process=3.2s
+completed day replication file ...: passes=1 download=2.4s quick-check=0.1s filter=2.3s apply=0.8s process=3.2s
 ```
 
 Download time overlaps with processing of the preceding file, but filtering

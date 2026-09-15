@@ -359,16 +359,26 @@ def process_one(
             filtered_path = temp_path / "filtered-0.osc"
             delta_path = temp_path / "delta-0.jsonl"
             file_started = time.monotonic()
+            quick_check_seconds = 0.0
+            quick_check_started = time.monotonic()
             first_check = quick_check(
                 downloaded.path,
                 config["tag_key_prefix"],
                 retained,
                 temp_path / "quick-check.ids",
             )
+            first_quick_check_seconds = time.monotonic() - quick_check_started
+            quick_check_seconds += first_quick_check_seconds
+            LOG.info(
+                "quick-check %s replication file %s pass=1 result=%s in %.1fs",
+                cadence,
+                change_url,
+                first_check or "discarded",
+                first_quick_check_seconds,
+            )
             if first_check is None:
                 LOG.info(
-                    "discarded %s replication file %s: quick-check found no "
-                    "matching tags or retained objects",
+                    "discarded %s replication file %s after quick-check",
                     cadence,
                     change_url,
                 )
@@ -386,9 +396,21 @@ def process_one(
                     filtered_path = temp_path / f"filtered-{pass_number}.osc"
                     delta_path = temp_path / f"delta-{pass_number}.jsonl"
                     quick_check_path = temp_path / "quick-check.ids"
-                    if not write_id_patterns(quick_check_path, include) or not gzip_contains(
+                    quick_check_started = time.monotonic()
+                    dependent_present = write_id_patterns(quick_check_path, include) and gzip_contains(
                         downloaded.path, pattern_path=quick_check_path
-                    ):
+                    )
+                    dependency_quick_check_seconds = time.monotonic() - quick_check_started
+                    quick_check_seconds += dependency_quick_check_seconds
+                    LOG.info(
+                        "quick-check %s replication file %s pass=%d result=%s in %.1fs",
+                        cadence,
+                        change_url,
+                        pass_number + 1,
+                        "dependent object" if dependent_present else "discarded",
+                        dependency_quick_check_seconds,
+                    )
+                    if not dependent_present:
                         LOG.info(
                             "skipping filter replay pass %d for %s: no newly "
                             "discovered dependent object is present",
@@ -430,11 +452,12 @@ def process_one(
             process_seconds = time.monotonic() - file_started
             LOG.info(
                 "completed %s replication file %s: passes=%d download=%.1fs "
-                "filter=%.1fs apply=%.1fs process=%.1fs",
+                "quick-check=%.1fs filter=%.1fs apply=%.1fs process=%.1fs",
                 cadence,
                 change_url,
                 pass_number + 1,
                 downloaded.seconds,
+                quick_check_seconds,
                 filter_seconds,
                 apply_seconds,
                 process_seconds,
