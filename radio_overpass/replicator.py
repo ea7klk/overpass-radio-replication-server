@@ -230,6 +230,7 @@ def process_one(config: dict[str, Any], cadence: str, sequence: int) -> dict[str
     max_wait = int(config["retry_max_seconds"])
     state = fetch_state(base, sequence, retry, max_wait)
     _, change_url = urls(base, sequence)
+    LOG.info("processing %s replication file %s", cadence, change_url)
 
     work_dir = Path(config["work_dir"])
     work_dir.mkdir(parents=True, exist_ok=True)
