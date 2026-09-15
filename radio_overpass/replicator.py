@@ -201,7 +201,8 @@ def delta_state(items: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def process_one(config: dict[str, Any], cadence: str, sequence: int) -> dict[str, Any]:
-    base = config[f"{cadence}_base_url"]
+    base_key = "daily" if cadence == "day" else cadence
+    base = config[f"{base_key}_base_url"]
     retry = int(config["retry_initial_seconds"])
     max_wait = int(config["retry_max_seconds"])
     state = fetch_state(base, sequence, retry, max_wait)
