@@ -43,6 +43,12 @@ earlier in that same file; they do not cause additional downloads.
 The standard OSM replication feed is OsmChange XML (`.osc.gz`), not PBF. The
 Overpass updater consumes the filtered OSC XML.
 
+The filter uses `lxml.etree.iterparse` with C-accelerated parsing. It asks the
+parser to report only `osmChange`, action-group, and `node`/`way`/`relation`
+events, avoiding Python callbacks for every `tag`, `nd`, and `member` child.
+Processed siblings are removed from the parse tree immediately, keeping memory
+bounded even for large replication files.
+
 ## Setup
 
 Install:
@@ -254,6 +260,17 @@ journalctl -u overpass-radio-replicator.service -f
 The replicator only advances its checkpoint after a successful database
 update. If it is stopped or a download fails, restart the same unit; it will
 retry the current sequence.
+
+After updating an existing checkout, install or refresh the parser dependency
+and restart the service:
+
+```bash
+cd /opt/overpass-radio-replication-server
+sudo git pull --ff-only
+sudo -u overpass-radio /srv/overpass-radio/venv/bin/python -m pip install \
+  --requirement requirements.txt
+sudo systemctl restart overpass-radio-replicator.service
+```
 
 ### Optional Apache CGI endpoint
 
