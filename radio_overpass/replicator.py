@@ -1120,6 +1120,102 @@ class Prefetcher:
         self.executor.shutdown(wait=True)
 
 
+class CatalogQueryPool:
+    """Query catalog roots in the background while replication catches up."""
+
+    def __init__(self, config: dict[str, Any], directory: Path) -> None:
+        self.config = config
+        self.directory = directory
+        self.executor = ThreadPoolExecutor(
+            max_workers=max(1, int(config.get("catalog_query_workers", 4)))
+        )
+        self.futures: dict[str, Future[RemoteRefresh]] = {}
+
+    def start(self) -> None:
+        catalog = load_json(catalog_path(self.config), {})
+        if not isinstance(catalog, dict):
+            return
+        roots = sorted({str(root) for root in catalog.get("roots", [])})
+        if not roots:
+            return
+        known_keys = set(catalog.get("roots", [])) | set(catalog.get("dependencies", []))
+        self.directory.mkdir(parents=True, exist_ok=True)
+        LOG.info(
+            "starting background catalog query lane for %d root(s); "
+            "replication downloads and filtering continue concurrently",
+            len(roots),
+        )
+        for root_key in roots:
+            kind, object_id = root_key_parts(root_key)
+            root_directory = self.directory / f"{kind}-{object_id}"
+            root_directory.mkdir(parents=True, exist_ok=True)
+            self.futures[root_key] = self.executor.submit(
+                query_overpass,
+                self.config,
+                root_key,
+                known_keys,
+                root_directory / "remote.osc",
+            )
+
+    def drain_ready(self, *, wait: bool = False) -> None:
+        """Apply completed results in catalog order; never write from workers."""
+        while self.futures:
+            root_key, future = next(iter(self.futures.items()))
+            if not wait and not future.done():
+                return
+            del self.futures[root_key]
+            try:
+                refresh = future.result()
+            except OverpassRootNotFoundError:
+                catalog = load_json(catalog_path(self.config), {})
+                if isinstance(catalog, dict):
+                    catalog["roots"] = sorted(
+                        set(catalog.get("roots", [])) - {root_key}
+                    )
+                    atomic_json(catalog_path(self.config), catalog)
+                LOG.warning(
+                    "%s",
+                    red_console(
+                        f"removed vanished catalog root {root_key}; "
+                        "continuing catalog query lane"
+                    ),
+                )
+                continue
+            except Exception as exc:
+                # A transient catalog refresh must not stop the replication
+                # lane. The root remains in catalog.json and will be retried
+                # on the next process startup.
+                LOG.error(
+                    "%s",
+                    red_console(
+                        f"background catalog query failed for {root_key}: {exc}; "
+                        "replication continues"
+                    ),
+                )
+                continue
+
+            state = load_json(catalog_path(self.config), {})
+            if not isinstance(state, dict):
+                state = {}
+            remote_osc(
+                refresh.path,
+                refresh.objects,
+                set(state.get("roots", [])) | set(state.get("dependencies", [])),
+            )
+            apply_remote_refresh(
+                self.config,
+                root_key,
+                refresh,
+                state,
+                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "catalog background refresh",
+            )
+
+    def close(self) -> None:
+        self.drain_ready(wait=True)
+        self.executor.shutdown(wait=True)
+
+
 def resolve_minute_start(config: dict[str, Any], timestamp: str) -> int:
     """Find the first minute sequence after a daily checkpoint timestamp.
 
@@ -1161,6 +1257,7 @@ def catch_up(
     cadence: str,
     *,
     apply_database: bool = True,
+    catalog_queries: CatalogQueryPool | None = None,
 ) -> dict[str, Any]:
     base_key = "daily" if cadence == "day" else cadence
     base = config[f"{base_key}_base_url"]
@@ -1171,6 +1268,8 @@ def catch_up(
         prefetcher = Prefetcher(config, cadence, Path(directory))
         try:
             while checkpoint["cadence"] == cadence:
+                if catalog_queries is not None:
+                    catalog_queries.drain_ready()
                 target = latest(
                     base,
                     int(config["retry_initial_seconds"]),
@@ -1187,6 +1286,8 @@ def catch_up(
                     downloaded,
                     apply_database=apply_database,
                 )
+                if catalog_queries is not None:
+                    catalog_queries.drain_ready()
                 checkpoint = {
                     "phase": checkpoint.get("phase", "apply"),
                     "cadence": cadence,
@@ -1202,57 +1303,82 @@ def catch_up(
 def run(config: dict[str, Any]) -> None:
     process_pending_membership(config)
     state_path = Path(config["state_file"])
-    checkpoint = load_json(state_path, None)
-    if checkpoint is None:
-        daily_start = config.get("daily_start_sequence")
-        if daily_start is None:
-            sequences = indexed_sequences(
-                config["daily_base_url"],
-                int(config["retry_initial_seconds"]),
-                int(config["retry_max_seconds"]),
+    work_dir = Path(config["work_dir"])
+    work_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="catalog-queries-", dir=work_dir) as directory:
+        catalog_queries = CatalogQueryPool(config, Path(directory))
+        catalog_queries.start()
+        try:
+            checkpoint = load_json(state_path, None)
+            if checkpoint is None:
+                daily_start = config.get("daily_start_sequence")
+                if daily_start is None:
+                    sequences = indexed_sequences(
+                        config["daily_base_url"],
+                        int(config["retry_initial_seconds"]),
+                        int(config["retry_max_seconds"]),
+                    )
+                    if not sequences:
+                        raise RuntimeError("daily replication index contains no sequences")
+                    daily_start = sequences[0]
+                dependency_start = config.get("daily_dependency_start_sequence")
+                if dependency_start is not None and int(dependency_start) > int(daily_start):
+                    raise ValueError("daily_dependency_start_sequence must not exceed daily_start_sequence")
+                checkpoint = {
+                    "phase": "discovery" if dependency_start is not None else "apply",
+                    "cadence": "day",
+                    "sequence": int(daily_start) - 1,
+                    "timestamp": "",
+                }
+
+            discovery = checkpoint.get("phase") == "discovery"
+            checkpoint = catch_up(
+                config,
+                checkpoint,
+                "day",
+                apply_database=not discovery,
+                catalog_queries=catalog_queries,
             )
-            if not sequences:
-                raise RuntimeError("daily replication index contains no sequences")
-            daily_start = sequences[0]
-        dependency_start = config.get("daily_dependency_start_sequence")
-        if dependency_start is not None and int(dependency_start) > int(daily_start):
-            raise ValueError("daily_dependency_start_sequence must not exceed daily_start_sequence")
-        checkpoint = {
-            "phase": "discovery" if dependency_start is not None else "apply",
-            "cadence": "day",
-            "sequence": int(daily_start) - 1,
-            "timestamp": "",
-        }
 
-    discovery = checkpoint.get("phase") == "discovery"
-    checkpoint = catch_up(config, checkpoint, "day", apply_database=not discovery)
+            if discovery and checkpoint["cadence"] == "day":
+                dependency_start = config.get("daily_dependency_start_sequence")
+                if dependency_start is None:
+                    raise RuntimeError("discovery checkpoint requires daily_dependency_start_sequence")
+                checkpoint = {
+                    "phase": "replay",
+                    "cadence": "day",
+                    "sequence": int(dependency_start) - 1,
+                    "timestamp": checkpoint["timestamp"],
+                }
+                atomic_json(state_path, checkpoint)
+                checkpoint = catch_up(
+                    config,
+                    checkpoint,
+                    "day",
+                    apply_database=True,
+                    catalog_queries=catalog_queries,
+                )
 
-    if discovery and checkpoint["cadence"] == "day":
-        dependency_start = config.get("daily_dependency_start_sequence")
-        if dependency_start is None:
-            raise RuntimeError("discovery checkpoint requires daily_dependency_start_sequence")
-        checkpoint = {
-            "phase": "replay",
-            "cadence": "day",
-            "sequence": int(dependency_start) - 1,
-            "timestamp": checkpoint["timestamp"],
-        }
-        atomic_json(state_path, checkpoint)
-        checkpoint = catch_up(config, checkpoint, "day", apply_database=True)
+            if checkpoint["cadence"] == "day":
+                minute_sequence = resolve_minute_start(config, checkpoint["timestamp"])
+                checkpoint = {
+                    "phase": "apply",
+                    "cadence": "minute",
+                    "sequence": minute_sequence - 1,
+                    "timestamp": checkpoint["timestamp"],
+                }
+                atomic_json(state_path, checkpoint)
 
-    if checkpoint["cadence"] == "day":
-        minute_sequence = resolve_minute_start(config, checkpoint["timestamp"])
-        checkpoint = {
-            "phase": "apply",
-            "cadence": "minute",
-            "sequence": minute_sequence - 1,
-            "timestamp": checkpoint["timestamp"],
-        }
-        atomic_json(state_path, checkpoint)
-
-    while True:
-        checkpoint = catch_up(config, checkpoint, "minute")
-        time.sleep(int(config["poll_seconds"]))
+            while True:
+                checkpoint = catch_up(
+                    config,
+                    checkpoint,
+                    "minute",
+                    catalog_queries=catalog_queries,
+                )
+                time.sleep(int(config["poll_seconds"]))
+        finally:
+            catalog_queries.close()
 
 
 def main() -> int:

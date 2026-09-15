@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from radio_overpass.replicator import (
     DownloadedChange,
+    CatalogQueryPool,
     PREFETCH_WINDOW,
     object_log_message,
     process_pending_membership,
@@ -229,6 +230,46 @@ class QuickCheckTest(unittest.TestCase):
 
             self.assertEqual(maximum_active, 2)
             self.assertEqual(len(write_order), 2)
+
+    def test_catalog_roots_are_submitted_to_background_query_lane(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog.json"
+            catalog.write_text(
+                json.dumps({"roots": ["node:10", "node:11"], "dependencies": []}),
+                encoding="utf-8",
+            )
+            config = {
+                "membership_file": str(root / "membership.json"),
+                "catalog_file": str(catalog),
+                "catalog_query_workers": 2,
+                "tag_key_prefix": "communication:amateur_radio",
+                "retry_initial_seconds": 1,
+                "retry_max_seconds": 1,
+            }
+            queried: list[str] = []
+
+            def fake_query(_config, root_key, _known_keys, output_path):
+                queried.append(root_key)
+                return RemoteRefresh(
+                    output_path,
+                    {root_key: f'<node id="{root_key.split(":")[1]}" lat="40" lon="-3"/>'.encode()},
+                    {root_key: set()},
+                    {},
+                    {},
+                    0.01,
+                )
+
+            with (
+                patch("radio_overpass.replicator.query_overpass", side_effect=fake_query),
+                patch("radio_overpass.replicator.update_database"),
+            ):
+                pool = CatalogQueryPool(config, root / "query-work")
+                pool.start()
+                self.assertEqual(set(pool.futures), {"node:10", "node:11"})
+                pool.close()
+
+            self.assertEqual(set(queried), {"node:10", "node:11"})
 
     def test_public_overpass_query_returns_root_dependencies_and_dependents(self):
         class Response(BytesIO):
