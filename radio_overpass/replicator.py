@@ -157,7 +157,7 @@ def overpass_query(root_key: str, timeout: int) -> bytes:
 (
   {kind}(id:{object_id});
 );
-(._;>;);
+(._;>>;);
 (._;<<;);
 out body;
 """
@@ -592,6 +592,47 @@ def load_json(path: Path, default: Any) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+MISSING_GEOMETRY_RE = re.compile(
+    r"compute_geometry:\s+(Node|Way)\s+(\d+)\s+used in\s+"
+    r"(node|way|relation)\s+(\d+)\s+not found\.?$"
+)
+
+
+def overpass_update_diagnostics(stderr: str | None) -> str:
+    """Return a compact summary of diagnostics emitted by an Overpass update."""
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    missing = [match for line in lines if (match := MISSING_GEOMETRY_RE.fullmatch(line))]
+    parts: list[str] = []
+    if missing:
+        parents = {(match.group(3), match.group(4)) for match in missing}
+        examples = ", ".join(
+            f"{match.group(1).lower()} {match.group(2)} -> "
+            f"{match.group(3)} {match.group(4)}"
+            for match in missing[:3]
+        )
+        parts.append(
+            f"{len(missing)} missing geometry reference(s) across "
+            f"{len(parents)} object(s); examples: {examples}"
+        )
+
+    other = [line for line in lines if not MISSING_GEOMETRY_RE.fullmatch(line)]
+    if other:
+        parts.append("diagnostic: " + " | ".join(other[-3:]))
+    return ": " + "; ".join(parts)
+
+
+def log_overpass_update_diagnostics(stderr: str | None) -> None:
+    summary = overpass_update_diagnostics(stderr)
+    if summary:
+        LOG.warning(
+            "%s",
+            red_console(f"Overpass DB update completed with diagnostics{summary}"),
+        )
+
+
 def update_database(
     config: dict[str, Any],
     osc_path: Path,
@@ -627,16 +668,24 @@ def update_database(
         )
         try:
             with osc_path.open("rb") as source:
-                subprocess.run(command, stdin=source, check=True)
+                result = subprocess.run(
+                    command,
+                    stdin=source,
+                    check=True,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
         except subprocess.CalledProcessError as exc:
+            diagnostics = overpass_update_diagnostics(exc.stderr)
             LOG.error(
                 "%s",
                 red_console(
                     f"Overpass DB initialization failed for {osc_path} "
-                    f"(exit {exc.returncode})"
+                    f"(exit {exc.returncode}){diagnostics}"
                 ),
             )
             raise
+        log_overpass_update_diagnostics(result.stderr)
         return
 
     command = [
@@ -649,15 +698,23 @@ def update_database(
         command.append(config["meta_mode"])
     LOG.info("%s", light_blue_console(f"writing {description} to Overpass DB at {timestamp}"))
     try:
-        subprocess.run(command, check=True)
+        result = subprocess.run(
+            command,
+            check=True,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
     except subprocess.CalledProcessError as exc:
+        diagnostics = overpass_update_diagnostics(exc.stderr)
         LOG.error(
             "%s",
             red_console(
                 f"Overpass DB update failed for {description} (exit {exc.returncode})"
+                f"{diagnostics}"
             ),
         )
         raise
+    log_overpass_update_diagnostics(result.stderr)
 
 
 def commit_delta(membership_path: Path, delta_path: Path) -> None:

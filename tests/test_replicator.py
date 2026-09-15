@@ -22,6 +22,8 @@ from radio_overpass.replicator import (
     light_blue_console,
     light_green_console,
     light_turquoise_console,
+    overpass_query,
+    overpass_update_diagnostics,
     red_console,
     RemoteRefresh,
     OverpassRootNotFoundError,
@@ -316,8 +318,18 @@ class QuickCheckTest(unittest.TestCase):
         self.assertEqual(set(refresh.objects), {"node:1", "node:2", "way:9"})
         query = urlopen.call_args.args[0].data.decode("utf-8")
         self.assertIn("node(id:1);", query)
+        self.assertIn("(._;>>;);", query)
         self.assertIn("(._;<<;);", query)
         self.assertIn(b"<way id=\"9\"", remote_xml)
+
+    def test_missing_geometry_diagnostics_are_summarized(self):
+        diagnostics = """compute_geometry: Node 1756187290 used in way 405816383 not found.
+compute_geometry: Way 1206978494 used in relation 6791194 not found.
+"""
+        summary = overpass_update_diagnostics(diagnostics)
+        self.assertIn("2 missing geometry reference(s) across 2 object(s)", summary)
+        self.assertIn("node 1756187290 -> way 405816383", summary)
+        self.assertIn("way 1206978494 -> relation 6791194", summary)
 
     def test_public_overpass_missing_root_is_terminal_without_retry(self):
         class Response(BytesIO):
