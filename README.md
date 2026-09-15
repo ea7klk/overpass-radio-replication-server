@@ -301,6 +301,10 @@ failed download or failed database update leaves the checkpoint unchanged, so
 the same sequence is retried. Temporary filtered batches are removed after a
 successful application and are safe to remove after an interrupted run.
 
+OSC streams are fetched with the system `curl` command, with redirects and
+transient retries enabled, then piped directly into the Python filter. This
+also avoids Python HTTPS/proxy interoperability problems on some servers.
+
 The updater verifies that each next sequence is exactly the previous sequence
 plus one. It never skips a missing or temporarily unavailable file.
 
