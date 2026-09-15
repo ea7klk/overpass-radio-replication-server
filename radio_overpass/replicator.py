@@ -1567,21 +1567,10 @@ def catch_up(
 
     with tempfile.TemporaryDirectory(prefix=f"prefetch-{cadence}-", dir=work_dir) as directory:
         prefetcher = Prefetcher(config, cadence, Path(directory))
-        batch_size = max(
-            1,
-            int(
-                config.get(
-                    "initial_update_batch_size" if cadence == "day" else "minute_update_batch_size",
-                    100 if cadence == "day" else 1,
-                )
-            ),
-        )
         catalog_query_batch_size = max(
             1,
             int(config.get("catalog_query_batch_size", 20)),
         )
-        maintenance: DispatcherMaintenance | None = None
-        processed_in_batch = 0
         try:
             while checkpoint["cadence"] == cadence:
                 if (
@@ -1591,10 +1580,6 @@ def catch_up(
                         or catalog_queries.has_ready()
                     )
                 ):
-                    if apply_database and maintenance is None:
-                        candidate = DispatcherMaintenance(config)
-                        candidate.__enter__()
-                        maintenance = candidate
                     catalog_queries.drain_ready(
                         max_items=catalog_query_batch_size
                     )
@@ -1606,10 +1591,6 @@ def catch_up(
                 next_sequence = checkpoint["sequence"] + 1
                 if next_sequence > target["sequence"]:
                     break
-                if apply_database and maintenance is None:
-                    candidate = DispatcherMaintenance(config)
-                    candidate.__enter__()
-                    maintenance = candidate
                 prefetcher.fill(next_sequence, target["sequence"])
                 downloaded = prefetcher.take(next_sequence)
                 result = process_one(
@@ -1629,15 +1610,7 @@ def catch_up(
                     "timestamp": result["timestamp"],
                 }
                 atomic_json(Path(config["state_file"]), checkpoint)
-                if apply_database:
-                    processed_in_batch += 1
-                    if processed_in_batch >= batch_size:
-                        maintenance.__exit__(None, None, None)
-                        maintenance = None
-                        processed_in_batch = 0
         finally:
-            if maintenance is not None:
-                maintenance.__exit__(None, None, None)
             prefetcher.close()
     return checkpoint
 
