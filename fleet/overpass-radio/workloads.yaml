@@ -22,6 +22,27 @@ spec:
       - name: registry-credentials
       nodeSelector:
         kubernetes.io/hostname: spainip-k3s
+      initContainers:
+      - name: initialize-overpass-database
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.1
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        args:
+        - >-
+          set -eu;
+          db_dir=/srv/overpass-radio/db;
+          mkdir -p "$db_dir" /srv/overpass-radio/work;
+          if [ ! -f "$db_dir/nodes.map" ]; then
+            printf '%s\n'
+            '<osm version="0.6" generator="radio-overpass"><node id="1" lat="0" lon="0" version="1"/></osm>' |
+            /opt/overpass/bin/update_database --db-dir="$db_dir" --meta=no;
+          fi;
+          test -f "$db_dir/nodes.map"
+        volumeMounts:
+        - name: data
+          mountPath: /srv/overpass-radio
       containers:
       - name: overpass
         image: ghcr.io/ea7klk/overpass-radio-overpass:0.0.1
