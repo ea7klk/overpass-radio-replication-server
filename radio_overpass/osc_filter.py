@@ -123,9 +123,16 @@ def main() -> int:
     parser.add_argument("--membership", required=True, type=Path)
     parser.add_argument("--delta", required=True, type=Path)
     parser.add_argument("--prefix", default="communication:amateur_radio")
+    parser.add_argument(
+        "--include",
+        action="append",
+        default=[],
+        help="dependency ID to seed for a replay pass, such as node:123",
+    )
     args = parser.parse_args()
 
     roots, dependencies, refs = state_sets(load_state(args.membership))
+    dependencies.update(args.include)
     args.delta.parent.mkdir(parents=True, exist_ok=True)
 
     events: list[dict[str, object]] = []
