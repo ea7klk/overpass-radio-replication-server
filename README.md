@@ -147,7 +147,12 @@ sudo chmod 755 /srv /srv/overpass-radio
 
 sudo cp config.example.json /etc/overpass-radio.json
 sudo editor /etc/overpass-radio.json
+python3 -m json.tool /etc/overpass-radio.json >/dev/null
 ```
+
+The validation command must complete without output. JSON requires commas
+between fields, double quotes around keys and strings, and no trailing comma
+after the final field.
 
 Set these values in `/etc/overpass-radio.json`:
 
