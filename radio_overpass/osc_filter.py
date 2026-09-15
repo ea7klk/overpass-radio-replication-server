@@ -14,7 +14,7 @@ import gzip
 import json
 import sys
 import tempfile
-import xml.etree.ElementTree as ET
+from lxml import etree as ET
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
 
@@ -149,12 +149,22 @@ def main() -> int:
     def event(op: str, key: str, root: bool = False) -> None:
         events.append({"op": op, "id": key, "root": root})
 
-    # iterparse keeps only the current object in memory. The three short-lived
+    # lxml parses the XML in optimized C code. Restricting events to the
+    # elements that matter avoids a Python callback for every <tag>, <nd>, and
+    # <member> child in a planet-scale change stream. The three short-lived
     # group files let us route a tag-loss removal into <delete> while the
     # upstream stream remains create/modify/delete ordered.
     try:
         with gzip.GzipFile(fileobj=sys.stdin.buffer, mode="rb") as source:
-            for parse_event, element in ET.iterparse(source, events=("start", "end")):
+            for parse_event, element in ET.iterparse(
+                source,
+                events=("start", "end"),
+                tag=("osmChange", "create", "modify", "delete", *OBJECT_TYPES),
+                huge_tree=True,
+                resolve_entities=False,
+                load_dtd=False,
+                no_network=True,
+            ):
                 if parse_event == "start":
                     if root_tag is None:
                         root_tag = element.tag
@@ -200,9 +210,17 @@ def main() -> int:
                             event("remove", key, True)
 
                     element.clear()
+                    # Remove already processed siblings from the lxml tree.
+                    # Without this, the root group retains every object until
+                    # the whole file has been parsed even though iterparse is
+                    # otherwise incremental.
+                    parent = element.getparent()
+                    while parent is not None and element.getprevious() is not None:
+                        del parent[0]
                     object_element = None
                 elif element.tag in GROUPS:
                     action = None
+                    element.clear()
 
         # Persist the new membership graph only after the caller has applied
         # all emitted OSM changes successfully.
