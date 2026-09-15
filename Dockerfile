@@ -29,7 +29,8 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        bash ca-certificates curl gzip grep \
-       libbz2-1.0 libexpat1 liblz4-1 liblzma5 zlib1g \
+       libbz2-1.0 libexpat1 libgcc-s1 liblz4-1 liblzma5 \
+       libstdc++6 zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=overpass-builder /opt/overpass /opt/overpass

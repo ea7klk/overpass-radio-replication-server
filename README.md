@@ -210,9 +210,10 @@ ALLOWED_ORIGINS=https://radio.example.org,https://map.example.org:8443 \
 
 Apache returns CORS headers only for those exact `Origin` values. Requests with
 no `Referer` remain usable for command-line clients; requests with a non-empty
-`Referer` must begin with one of the approved origins. This is an allowlist,
-not authentication, so put TLS, authentication, and rate limiting in front of
-an Internet-facing deployment as appropriate.
+`Referer` must begin with one of the approved origins unless the request also
+has an approved `Origin`. This is an allowlist, not authentication, so put TLS,
+authentication, and rate limiting in front of an Internet-facing deployment as
+appropriate.
 
 The release workflow runs the tests for pull requests and pushes to `main`.
 It builds both images only for a published GitHub release or an explicit

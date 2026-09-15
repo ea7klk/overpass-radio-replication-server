@@ -37,7 +37,10 @@ cors_config=/etc/apache2/conf-enabled/overpass-radio-cors.conf
             exit 2
         fi
         escaped_origin=$(printf '%s' "$origin" | sed 's/[.[\*^$()+?{|\\]/\\&/g')
-        printf 'SetEnvIf Origin "^%s$" radio_cors_allowed=1\n' "$escaped_origin"
+        # Treat an approved Origin as an approved request as well.  Browsers
+        # are allowed to omit Referer, so access must not depend on both
+        # headers being present.
+        printf 'SetEnvIf Origin "^%s$" radio_cors_allowed=1 radio_referrer_allowed=1\n' "$escaped_origin"
         printf 'SetEnvIf Referer "^%s(/|$)" radio_referrer_allowed=1\n' "$escaped_origin"
     done
 } > "$cors_config"

@@ -36,6 +36,10 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Compile Python modules
         run: python -m compileall -q radio_overpass
+      - name: Validate shell entrypoints
+        run: bash -n docker/overpass/entrypoint.sh docker/replicator/entrypoint.sh
+      - name: Validate Compose definition
+        run: docker compose config --quiet
 
   image-metadata:
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'

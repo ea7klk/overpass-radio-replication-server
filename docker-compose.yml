@@ -16,8 +16,8 @@ services:
       test:
         - CMD-SHELL
         - >-
-          curl --fail --silent --get http://127.0.0.1/api/interpreter
-          --data-urlencode 'data=[out:json];node(0);out;' >/dev/null
+          curl --noproxy '*' --fail --silent --get http://127.0.0.1/api/interpreter
+          --data-urlencode 'data=[out:json];node(0);out;' | grep -q '\"version\"'
       interval: 30s
       timeout: 10s
       retries: 10
