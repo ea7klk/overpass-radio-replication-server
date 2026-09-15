@@ -159,6 +159,7 @@ def overpass_query(root_key: str, timeout: int) -> bytes:
 );
 (._;>>;);
 (._;<<;);
+(._;>>;);
 out body;
 """
     return query.encode("utf-8")

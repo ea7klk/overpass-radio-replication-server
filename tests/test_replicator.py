@@ -318,7 +318,7 @@ class QuickCheckTest(unittest.TestCase):
         self.assertEqual(set(refresh.objects), {"node:1", "node:2", "way:9"})
         query = urlopen.call_args.args[0].data.decode("utf-8")
         self.assertIn("node(id:1);", query)
-        self.assertIn("(._;>>;);", query)
+        self.assertEqual(query.count("(._;>>;);"), 2)
         self.assertIn("(._;<<;);", query)
         self.assertIn(b"<way id=\"9\"", remote_xml)
 

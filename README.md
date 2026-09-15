@@ -29,12 +29,14 @@ The dependency set is implementation data. If the endpoint must prevent
 clients from querying dependencies directly, put a query-restricting proxy in
 front of Overpass.
 
-Public root queries use Overpass's transitive downward recursion, so nodes
-inside member ways and nested relation members are included before the result
-is written locally. If Overpass nevertheless reports a missing geometry
-reference while updating, the replicator summarizes the diagnostic and keeps
-the successful update; a nonzero updater exit remains fatal so the same source
-sequence can be retried without advancing its checkpoint.
+Public root queries use Overpass's transitive downward recursion both before
+and after upward recursion. This ensures that nodes inside member ways and
+nested relation members of newly discovered dependent relations are included
+before the result is written locally. If Overpass nevertheless reports a
+missing geometry reference while updating, the replicator summarizes the
+diagnostic and keeps the successful update; a nonzero updater exit remains
+fatal so the same source sequence can be retried without advancing its
+checkpoint.
 
 For each successful sequence, the updater logs every applied root and
 dependency object, plus removals, with the cadence and sequence number.
