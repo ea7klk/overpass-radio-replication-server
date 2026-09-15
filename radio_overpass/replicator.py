@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 import json
 import logging
 import os
@@ -19,6 +21,13 @@ from html.parser import HTMLParser
 
 
 LOG = logging.getLogger("radio-overpass")
+
+
+@dataclass
+class DownloadedChange:
+    path: Path
+    state: dict[str, Any]
+    seconds: float
 
 
 def sequence_path(sequence: int) -> str:
@@ -144,14 +153,73 @@ def commit_delta(membership_path: Path, delta_path: Path) -> None:
         atomic_json(membership_path, final_state)
 
 
-def filter_stream(
+def download_change(
     config: dict[str, Any],
-    change_url: str,
+    cadence: str,
+    sequence: int,
+    destination: Path,
+) -> DownloadedChange:
+    base_key = "daily" if cadence == "day" else cadence
+    base = config[f"{base_key}_base_url"]
+    state = fetch_state(
+        base,
+        sequence,
+        int(config["retry_initial_seconds"]),
+        int(config["retry_max_seconds"]),
+    )
+    _, change_url = urls(base, sequence)
+    partial = destination.with_suffix(destination.suffix + ".part")
+    wait = int(config["retry_initial_seconds"])
+    max_wait = int(config["retry_max_seconds"])
+    while True:
+        started = time.monotonic()
+        try:
+            partial.unlink(missing_ok=True)
+            subprocess.run(
+                [
+                    "curl",
+                    "--fail",
+                    "--location",
+                    "--silent",
+                    "--show-error",
+                    "--retry",
+                    "3",
+                    "--retry-delay",
+                    "5",
+                    "--connect-timeout",
+                    "120",
+                    "--output",
+                    str(partial),
+                    change_url,
+                ],
+                check=True,
+            )
+            subprocess.run(["gzip", "-t", str(partial)], check=True)
+            os.replace(partial, destination)
+            seconds = time.monotonic() - started
+            LOG.info(
+                "downloaded %s replication file %s in %.1fs",
+                cadence,
+                change_url,
+                seconds,
+            )
+            return DownloadedChange(destination, state, seconds)
+        except (OSError, urllib.error.HTTPError, subprocess.CalledProcessError) as exc:
+            LOG.warning("download failed for %s: %s; retrying in %ss", change_url, exc, wait)
+            partial.unlink(missing_ok=True)
+            destination.unlink(missing_ok=True)
+            time.sleep(wait)
+            wait = min(max_wait, max(wait * 2, 1))
+
+
+def filter_file(
+    config: dict[str, Any],
+    source_path: Path,
     membership: Path,
     filtered_path: Path,
     delta_path: Path,
     include: set[str],
-) -> dict[str, float]:
+) -> float:
     command = [
         sys.executable,
         "-m",
@@ -169,49 +237,11 @@ def filter_stream(
     environment = os.environ.copy()
     package_root = str(Path(__file__).parent.parent)
     environment["PYTHONPATH"] = package_root + os.pathsep + environment.get("PYTHONPATH", "")
-    curl_command = [
-        "curl",
-        "--fail",
-        "--location",
-        "--silent",
-        "--show-error",
-        "--retry",
-        "3",
-        "--retry-delay",
-        "5",
-        "--connect-timeout",
-        "120",
-        change_url,
-    ]
-    wait = int(config["retry_initial_seconds"])
-    max_wait = int(config["retry_max_seconds"])
-    while True:
-        curl_process: subprocess.Popen[bytes] | None = None
-        started = time.monotonic()
-        try:
-            curl_process = subprocess.Popen(curl_command, stdout=subprocess.PIPE)
-            assert curl_process.stdout is not None
-            with curl_process.stdout as raw:
-                with filtered_path.open("wb") as filtered:
-                    subprocess.run(command, stdin=raw, stdout=filtered, check=True, env=environment)
-            filter_finished = time.monotonic()
-            curl_returncode = curl_process.wait()
-            download_finished = time.monotonic()
-            if curl_returncode != 0:
-                raise subprocess.CalledProcessError(curl_returncode, curl_command)
-            return {
-                "download_seconds": download_finished - started,
-                "filter_seconds": filter_finished - started,
-            }
-        except (OSError, urllib.error.HTTPError, subprocess.CalledProcessError) as exc:
-            LOG.warning("streaming download/filter failed for %s: %s; retrying in %ss", change_url, exc, wait)
-            filtered_path.unlink(missing_ok=True)
-            delta_path.unlink(missing_ok=True)
-            if curl_process is not None and curl_process.poll() is None:
-                curl_process.kill()
-                curl_process.wait()
-            time.sleep(wait)
-            wait = min(max_wait, max(wait * 2, 1))
+    started = time.monotonic()
+    with source_path.open("rb") as raw:
+        with filtered_path.open("wb") as filtered:
+            subprocess.run(command, stdin=raw, stdout=filtered, check=True, env=environment)
+    return time.monotonic() - started
 
 
 def delta_items(delta_path: Path) -> list[dict[str, Any]]:
@@ -229,12 +259,13 @@ def delta_state(items: list[dict[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
-def process_one(config: dict[str, Any], cadence: str, sequence: int) -> dict[str, Any]:
+def process_one(
+    config: dict[str, Any], cadence: str, downloaded: DownloadedChange
+) -> dict[str, Any]:
     base_key = "daily" if cadence == "day" else cadence
     base = config[f"{base_key}_base_url"]
-    retry = int(config["retry_initial_seconds"])
-    max_wait = int(config["retry_max_seconds"])
-    state = fetch_state(base, sequence, retry, max_wait)
+    state = downloaded.state
+    sequence = int(state["sequence"])
     _, change_url = urls(base, sequence)
     LOG.info("processing %s replication file %s", cadence, change_url)
 
@@ -242,73 +273,110 @@ def process_one(config: dict[str, Any], cadence: str, sequence: int) -> dict[str
     work_dir.mkdir(parents=True, exist_ok=True)
     membership = Path(config["membership_file"])
 
-    with tempfile.TemporaryDirectory(prefix=f"{cadence}-{sequence}-", dir=work_dir) as temp:
-        temp_path = Path(temp)
-        filtered_path = temp_path / "filtered-0.osc"
-        delta_path = temp_path / "delta-0.jsonl"
-        old_state = load_json(membership, {})
-        old_dependencies = set(old_state.get("dependencies", [])) if isinstance(old_state, dict) else set()
-        include: set[str] = set()
+    try:
+        with tempfile.TemporaryDirectory(prefix=f"{cadence}-{sequence}-", dir=work_dir) as temp:
+            temp_path = Path(temp)
+            filtered_path = temp_path / "filtered-0.osc"
+            delta_path = temp_path / "delta-0.jsonl"
+            old_state = load_json(membership, {})
+            old_dependencies = set(old_state.get("dependencies", [])) if isinstance(old_state, dict) else set()
+            include: set[str] = set()
 
-        # A root can reference an object that appears earlier in the same OSC
-        # file (for example, a way's nodes). Re-stream the file when a pass
-        # discovers new dependencies, seeding the next pass with those IDs.
-        # This keeps source files off disk while making same-file references
-        # available to Overpass. Most minute files need only one pass.
-        pass_number = 0
-        download_seconds = 0.0
-        filter_seconds = 0.0
-        file_started = time.monotonic()
-        while True:
-            if pass_number:
-                filtered_path = temp_path / f"filtered-{pass_number}.osc"
-                delta_path = temp_path / f"delta-{pass_number}.jsonl"
-            stream_stats = filter_stream(
-                config, change_url, membership, filtered_path, delta_path, include
+            # A root can reference an object that appears earlier in the same
+            # OSC file (for example, a way's nodes). Re-read the local file when
+            # a pass discovers new dependencies, seeding the next pass with
+            # those IDs. The source file is downloaded only once.
+            pass_number = 0
+            filter_seconds = 0.0
+            file_started = time.monotonic()
+            while True:
+                if pass_number:
+                    filtered_path = temp_path / f"filtered-{pass_number}.osc"
+                    delta_path = temp_path / f"delta-{pass_number}.jsonl"
+                filter_seconds += filter_file(
+                    config, downloaded.path, membership, filtered_path, delta_path, include
+                )
+                events = delta_items(delta_path)
+                candidate_state = delta_state(events)
+                if candidate_state is None:
+                    break
+                new_dependencies = set(candidate_state.get("dependencies", [])) - (old_dependencies | include)
+                if not new_dependencies:
+                    break
+                include.update(new_dependencies)
+                pass_number += 1
+
+            has_database_changes = any(item["op"] in {"add", "remove"} for item in events)
+            apply_started = time.monotonic()
+            if has_database_changes:
+                update_database(config, filtered_path, state["timestamp"])
+            apply_seconds = time.monotonic() - apply_started
+            if events:
+                commit_delta(membership, delta_path)
+            else:
+                LOG.info("sequence %s/%s contained no matching objects", cadence, sequence)
+
+            for item in events:
+                if item["op"] == "add":
+                    kind = "root" if item.get("root") else "dependency"
+                    LOG.info("applied %s %s at replication %s/%s", kind, item["id"], cadence, sequence)
+                elif item["op"] == "remove":
+                    kind = "root" if item.get("root") else "dependency"
+                    LOG.info("removed %s %s at replication %s/%s", kind, item["id"], cadence, sequence)
+
+            process_seconds = time.monotonic() - file_started
+            LOG.info(
+                "completed %s replication file %s: passes=%d download=%.1fs "
+                "filter=%.1fs apply=%.1fs process=%.1fs",
+                cadence,
+                change_url,
+                pass_number + 1,
+                downloaded.seconds,
+                filter_seconds,
+                apply_seconds,
+                process_seconds,
             )
-            download_seconds += stream_stats["download_seconds"]
-            filter_seconds += stream_stats["filter_seconds"]
-            events = delta_items(delta_path)
-            candidate_state = delta_state(events)
-            if candidate_state is None:
-                break
-            new_dependencies = set(candidate_state.get("dependencies", [])) - (old_dependencies | include)
-            if not new_dependencies:
-                break
-            include.update(new_dependencies)
-            pass_number += 1
-
-        has_database_changes = any(item["op"] in {"add", "remove"} for item in events)
-        apply_started = time.monotonic()
-        if has_database_changes:
-            update_database(config, filtered_path, state["timestamp"])
-        apply_seconds = time.monotonic() - apply_started
-        if events:
-            commit_delta(membership, delta_path)
-        else:
-            LOG.info("sequence %s/%s contained no matching objects", cadence, sequence)
-
-        for item in events:
-            if item["op"] == "add":
-                kind = "root" if item.get("root") else "dependency"
-                LOG.info("applied %s %s at replication %s/%s", kind, item["id"], cadence, sequence)
-            elif item["op"] == "remove":
-                kind = "root" if item.get("root") else "dependency"
-                LOG.info("removed %s %s at replication %s/%s", kind, item["id"], cadence, sequence)
-
-        LOG.info(
-            "completed %s replication file %s: passes=%d download=%.1fs "
-            "filter=%.1fs apply=%.1fs total=%.1fs",
-            cadence,
-            change_url,
-            pass_number + 1,
-            download_seconds,
-            filter_seconds,
-            apply_seconds,
-            time.monotonic() - file_started,
-        )
+    finally:
+        downloaded.path.unlink(missing_ok=True)
 
     return state
+
+
+class Prefetcher:
+    def __init__(self, config: dict[str, Any], cadence: str, directory: Path) -> None:
+        self.config = config
+        self.cadence = cadence
+        self.directory = directory
+        self.executor = ThreadPoolExecutor(max_workers=2)
+        self.futures: dict[int, Future[DownloadedChange]] = {}
+
+    def fill(self, first_sequence: int, target_sequence: int) -> None:
+        # Keep the current file plus the next two files queued. With two
+        # workers, after the current future completes both successors can be
+        # downloading while the current file is filtered and applied.
+        last_sequence = min(target_sequence, first_sequence + 2)
+        for sequence in range(first_sequence, last_sequence + 1):
+            if sequence in self.futures:
+                continue
+            destination = self.directory / f"download-{self.cadence}-{sequence}.osc.gz"
+            LOG.info(
+                "queueing %s replication file %s for download (prefetch window)",
+                self.cadence,
+                sequence,
+            )
+            self.futures[sequence] = self.executor.submit(
+                download_change,
+                self.config,
+                self.cadence,
+                sequence,
+                destination,
+            )
+
+    def take(self, sequence: int) -> DownloadedChange:
+        return self.futures.pop(sequence).result()
+
+    def close(self) -> None:
+        self.executor.shutdown(wait=True)
 
 
 def resolve_minute_start(config: dict[str, Any], timestamp: str) -> int:
@@ -346,6 +414,40 @@ def resolve_minute_start(config: dict[str, Any], timestamp: str) -> int:
     return lo
 
 
+def catch_up(
+    config: dict[str, Any], checkpoint: dict[str, Any], cadence: str
+) -> dict[str, Any]:
+    base_key = "daily" if cadence == "day" else cadence
+    base = config[f"{base_key}_base_url"]
+    work_dir = Path(config["work_dir"])
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix=f"prefetch-{cadence}-", dir=work_dir) as directory:
+        prefetcher = Prefetcher(config, cadence, Path(directory))
+        try:
+            while checkpoint["cadence"] == cadence:
+                target = latest(
+                    base,
+                    int(config["retry_initial_seconds"]),
+                    int(config["retry_max_seconds"]),
+                )
+                next_sequence = checkpoint["sequence"] + 1
+                if next_sequence > target["sequence"]:
+                    break
+                prefetcher.fill(next_sequence, target["sequence"])
+                downloaded = prefetcher.take(next_sequence)
+                result = process_one(config, cadence, downloaded)
+                checkpoint = {
+                    "cadence": cadence,
+                    "sequence": result["sequence"],
+                    "timestamp": result["timestamp"],
+                }
+                atomic_json(Path(config["state_file"]), checkpoint)
+        finally:
+            prefetcher.close()
+    return checkpoint
+
+
 def run(config: dict[str, Any]) -> None:
     state_path = Path(config["state_file"])
     checkpoint = load_json(state_path, None)
@@ -365,14 +467,7 @@ def run(config: dict[str, Any]) -> None:
             "sequence": int(daily_start) - 1,
         }
 
-    while checkpoint["cadence"] == "day":
-        target = latest(config["daily_base_url"], int(config["retry_initial_seconds"]), int(config["retry_max_seconds"]))
-        next_sequence = checkpoint["sequence"] + 1
-        if next_sequence > target["sequence"]:
-            break
-        result = process_one(config, "day", next_sequence)
-        checkpoint = {"cadence": "day", "sequence": result["sequence"], "timestamp": result["timestamp"]}
-        atomic_json(state_path, checkpoint)
+    checkpoint = catch_up(config, checkpoint, "day")
 
     if checkpoint["cadence"] == "day":
         minute_sequence = resolve_minute_start(config, checkpoint["timestamp"])
@@ -380,13 +475,7 @@ def run(config: dict[str, Any]) -> None:
         atomic_json(state_path, checkpoint)
 
     while True:
-        target = latest(config["minute_base_url"], int(config["retry_initial_seconds"]), int(config["retry_max_seconds"]))
-        next_sequence = checkpoint["sequence"] + 1
-        if next_sequence <= target["sequence"]:
-            result = process_one(config, "minute", next_sequence)
-            checkpoint = {"cadence": "minute", "sequence": result["sequence"], "timestamp": result["timestamp"]}
-            atomic_json(state_path, checkpoint)
-            continue
+        checkpoint = catch_up(config, checkpoint, "minute")
         time.sleep(int(config["poll_seconds"]))
 
 
