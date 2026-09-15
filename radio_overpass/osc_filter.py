@@ -139,8 +139,6 @@ def main() -> int:
     output_files = {group: tempfile.TemporaryFile(mode="w+b") for group in GROUPS}
     root_tag: str | None = None
     root_attributes: dict[str, str] = {}
-    action: str | None = None
-    object_element: ET.Element | None = None
 
     def emit(group: str, element: ET.Element) -> None:
         output_files[group].write(ET.tostring(element, encoding="utf-8"))
@@ -150,77 +148,68 @@ def main() -> int:
         events.append({"op": op, "id": key, "root": root})
 
     # lxml parses the XML in optimized C code. Restricting events to the
-    # elements that matter avoids a Python callback for every <tag>, <nd>, and
-    # <member> child in a planet-scale change stream. The three short-lived
-    # group files let us route a tag-loss removal into <delete> while the
-    # upstream stream remains create/modify/delete ordered.
+    # elements that matter avoids a Python callback for the document root,
+    # action wrappers, and every <tag>, <nd>, and <member> child in a
+    # planet-scale change stream. The three short-lived group files let us
+    # route a tag-loss removal into <delete> while the upstream stream remains
+    # create/modify/delete ordered.
     try:
         with gzip.GzipFile(fileobj=sys.stdin.buffer, mode="rb") as source:
-            for parse_event, element in ET.iterparse(
+            for _, element in ET.iterparse(
                 source,
-                events=("start", "end"),
-                tag=("osmChange", "create", "modify", "delete", *OBJECT_TYPES),
+                events=("end",),
+                tag=tuple(OBJECT_TYPES),
                 huge_tree=True,
                 resolve_entities=False,
                 load_dtd=False,
                 no_network=True,
             ):
-                if parse_event == "start":
-                    if root_tag is None:
-                        root_tag = element.tag
-                        root_attributes = dict(element.attrib)
-                    elif element.tag in GROUPS:
-                        action = element.tag
-                    elif element.tag in OBJECT_TYPES:
-                        object_element = element
-                    continue
+                parent = element.getparent()
+                if root_tag is None and parent is not None and parent.getparent() is not None:
+                    root = parent.getparent()
+                    root_tag = root.tag
+                    root_attributes = dict(root.attrib)
+                action = parent.tag if parent is not None and parent.tag in GROUPS else "modify"
+                key = osm_key(element)
+                is_root = matches(element, args.prefix)
+                known_root = key in roots
+                known_dependency = key in dependencies
+                object_refs = set(references(element))
 
-                if element.tag in OBJECT_TYPES and object_element is element:
-                    key = osm_key(element)
-                    is_root = matches(element, args.prefix)
-                    known_root = key in roots
-                    known_dependency = key in dependencies
-                    object_refs = set(references(element))
-
-                    if action == "delete":
-                        if known_root or known_dependency:
-                            emit("delete", element)
-                            event("remove", key, known_root)
-                        roots.discard(key)
-                        dependencies.discard(key)
-                        refs.pop(key, None)
-                    elif is_root:
-                        emit(action or "modify", element)
-                        event("add", key, True)
-                        roots.add(key)
+                if action == "delete":
+                    if known_root or known_dependency:
+                        emit("delete", element)
+                        event("remove", key, known_root)
+                    roots.discard(key)
+                    dependencies.discard(key)
+                    refs.pop(key, None)
+                elif is_root:
+                    emit(action, element)
+                    event("add", key, True)
+                    roots.add(key)
+                    refs[key] = object_refs
+                    promote(key, dependencies, refs)
+                elif known_root or known_dependency:
+                    # A matching tag was removed from a root. Keep the
+                    # object if another root uses it as a dependency.
+                    roots.discard(key)
+                    if known_dependency:
+                        emit(action, element)
+                        event("add", key, False)
                         refs[key] = object_refs
                         promote(key, dependencies, refs)
-                    elif known_root or known_dependency:
-                        # A matching tag was removed from a root. Keep the
-                        # object if another root uses it as a dependency.
-                        roots.discard(key)
-                        if known_dependency:
-                            emit(action or "modify", element)
-                            event("add", key, False)
-                            refs[key] = object_refs
-                            promote(key, dependencies, refs)
-                        else:
-                            refs.pop(key, None)
-                            emit("delete", deletion_element(element))
-                            event("remove", key, True)
+                    else:
+                        refs.pop(key, None)
+                        emit("delete", deletion_element(element))
+                        event("remove", key, True)
 
-                    element.clear()
-                    # Remove already processed siblings from the lxml tree.
-                    # Without this, the root group retains every object until
-                    # the whole file has been parsed even though iterparse is
-                    # otherwise incremental.
-                    parent = element.getparent()
-                    while parent is not None and element.getprevious() is not None:
-                        del parent[0]
-                    object_element = None
-                elif element.tag in GROUPS:
-                    action = None
-                    element.clear()
+                element.clear()
+                # Remove already processed siblings from the lxml tree.
+                # Without this, the root group retains every object until
+                # the whole file has been parsed even though iterparse is
+                # otherwise incremental.
+                while parent is not None and element.getprevious() is not None:
+                    del parent[0]
 
         # Persist the new membership graph only after the caller has applied
         # all emitted OSM changes successfully.
