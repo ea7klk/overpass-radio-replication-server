@@ -27,5 +27,12 @@ data:
       "tag_key_prefix": "communication:amateur_radio",
       "meta_mode": "--meta=no",
       "catalog_query_workers": 4,
-      "catalog_query_interval_seconds": 30
+      "catalog_query_interval_seconds": 30,
+      "maintenance_lock": "/srv/overpass-radio/.maintenance.lock",
+      "maintenance_lock_timeout_seconds": 300,
+      "maintenance_lock_stale_seconds": 1800,
+      "maintenance_lock_heartbeat_seconds": 10,
+      "initial_update_batch_size": 100,
+      "minute_update_batch_size": 1,
+      "minute_start_at_current": true
     }

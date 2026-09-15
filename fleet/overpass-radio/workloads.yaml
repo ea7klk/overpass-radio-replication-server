@@ -51,6 +51,10 @@ spec:
           value: https://potamap.ea7klk.es
         - name: OVERPASS_DB_DIR
           value: /srv/overpass-radio/db
+        - name: OVERPASS_MAINTENANCE_LOCK
+          value: /srv/overpass-radio/.maintenance.lock
+        - name: OVERPASS_MAINTENANCE_LOCK_STALE_SECONDS
+          value: "21600"
         ports:
         - name: http
           containerPort: 80

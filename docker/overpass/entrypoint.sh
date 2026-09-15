@@ -19,7 +19,7 @@ else
         exit 2
     fi
     printf 'Initializing empty Overpass database in %s before starting dispatcher\n' "$db_dir"
-    printf '%s\n' '<osm version="0.6" generator="radio-overpass"></osm>' |
+    printf '%s\n' '<osm version="0.6" generator="radio-overpass"><node id="1" lat="0" lon="0" version="1"/></osm>' |
         /opt/overpass/bin/update_database --db-dir="$db_dir" --meta=no
 fi
 
@@ -45,27 +45,66 @@ cors_config=/etc/apache2/conf-enabled/overpass-radio-cors.conf
     done
 } > "$cors_config"
 
+maintenance_lock="${OVERPASS_MAINTENANCE_LOCK:-/srv/overpass-radio/.maintenance.lock}"
+maintenance_stale_seconds="${OVERPASS_MAINTENANCE_LOCK_STALE_SECONDS:-21600}"
 dispatcher_pid=''
 apache_pid=''
+
+start_dispatcher() {
+    /opt/overpass/bin/dispatcher \
+        --osm-base \
+        --db-dir="$db_dir" \
+        --allow-duplicate-queries=yes &
+    dispatcher_pid=$!
+    printf 'Started Overpass dispatcher (pid %s)\n' "$dispatcher_pid"
+}
+
+stop_dispatcher() {
+    [[ -z "$dispatcher_pid" ]] && return 0
+    if kill -0 "$dispatcher_pid" 2>/dev/null; then
+        printf 'Stopping Overpass dispatcher for database maintenance\n'
+        /opt/overpass/bin/dispatcher --terminate --db-dir="$db_dir" >/dev/null 2>&1 || true
+        for _ in {1..120}; do
+            kill -0 "$dispatcher_pid" 2>/dev/null || break
+            sleep 1
+        done
+    fi
+    wait "$dispatcher_pid" 2>/dev/null || true
+    dispatcher_pid=''
+}
+
 cleanup() {
     trap - TERM INT EXIT
     [[ -n "$apache_pid" ]] && kill "$apache_pid" 2>/dev/null || true
-    [[ -n "$dispatcher_pid" ]] && kill "$dispatcher_pid" 2>/dev/null || true
+    stop_dispatcher
     wait 2>/dev/null || true
 }
 trap cleanup TERM INT EXIT
 
-/opt/overpass/bin/dispatcher \
-    --osm-base \
-    --db-dir="$db_dir" \
-    --allow-duplicate-queries=yes &
-dispatcher_pid=$!
+start_dispatcher
 
 apache2ctl -D FOREGROUND &
 apache_pid=$!
 
-while kill -0 "$dispatcher_pid" 2>/dev/null && kill -0 "$apache_pid" 2>/dev/null; do
-    sleep 2
+while kill -0 "$apache_pid" 2>/dev/null; do
+    if [[ -f "$maintenance_lock" ]]; then
+        lock_age=$(( $(date +%s) - $(stat -c %Y "$maintenance_lock" 2>/dev/null || date +%s) ))
+        if (( lock_age > maintenance_stale_seconds )); then
+            printf 'Removing stale dispatcher maintenance lock (%ss old)\n' "$lock_age" >&2
+            rm -f "$maintenance_lock"
+        else
+            stop_dispatcher
+            while [[ -f "$maintenance_lock" ]] && kill -0 "$apache_pid" 2>/dev/null; do
+                sleep 1
+            done
+            [[ -f "$maintenance_lock" ]] || start_dispatcher
+        fi
+    elif ! kill -0 "$dispatcher_pid" 2>/dev/null; then
+        wait "$dispatcher_pid" 2>/dev/null || true
+        dispatcher_pid=''
+        start_dispatcher
+    fi
+    sleep 1
 done
 
 exit 1

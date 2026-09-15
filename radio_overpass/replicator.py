@@ -14,6 +14,7 @@ import re
 import sys
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -33,10 +34,117 @@ ANSI_LIGHT_TURQUOISE = "\033[96m"
 ANSI_RESET = "\033[0m"
 OBJECT_TYPES = {"node", "way", "relation"}
 ROOT_KEY = re.compile(r"^(node|way|relation):([1-9][0-9]*)$")
+MAINTENANCE_STATE = threading.local()
 
 
 class OverpassRootNotFoundError(RuntimeError):
     """The public API answered successfully but did not return the root."""
+
+
+class DispatcherMaintenance:
+    """Coordinate database writers with the dispatcher through a shared file."""
+
+    def __init__(self, config: dict[str, Any]) -> None:
+        db_dir = Path(config["db_dir"])
+        self.path = Path(
+            config.get(
+                "maintenance_lock",
+                str(db_dir.parent / ".maintenance.lock"),
+            )
+        )
+        self.dispatcher_marker = db_dir / "osm3s_osm_base"
+        self.timeout_seconds = max(
+            1,
+            int(config.get("maintenance_lock_timeout_seconds", 300)),
+        )
+        self.stale_seconds = max(
+            self.timeout_seconds,
+            int(config.get("maintenance_lock_stale_seconds", 1800)),
+        )
+        self.heartbeat_seconds = max(
+            1,
+            int(config.get("maintenance_lock_heartbeat_seconds", 10)),
+        )
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread: threading.Thread | None = None
+
+    def _write_lock(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + self.timeout_seconds
+        while True:
+            try:
+                fd = os.open(
+                    self.path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o644,
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(
+                        {
+                            "pid": os.getpid(),
+                            "started_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                        handle,
+                    )
+                return
+            except FileExistsError:
+                try:
+                    age = time.time() - self.path.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                if age > self.stale_seconds:
+                    LOG.warning("removing stale dispatcher maintenance lock %s", self.path)
+                    self.path.unlink(missing_ok=True)
+                    continue
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"timed out waiting for dispatcher maintenance lock {self.path}"
+                    )
+                time.sleep(1)
+
+    def _heartbeat(self) -> None:
+        while not self._heartbeat_stop.wait(self.heartbeat_seconds):
+            try:
+                self.path.touch(exist_ok=True)
+            except OSError:
+                return
+
+    def __enter__(self) -> "DispatcherMaintenance":
+        depth = getattr(MAINTENANCE_STATE, "depth", 0)
+        if depth == 0:
+            self._write_lock()
+            self._heartbeat_thread = threading.Thread(
+                target=self._heartbeat,
+                name="dispatcher-maintenance-heartbeat",
+                daemon=True,
+            )
+            self._heartbeat_thread.start()
+            deadline = time.monotonic() + self.timeout_seconds
+            while self.dispatcher_marker.exists():
+                if time.monotonic() >= deadline:
+                    self.__exit__(None, None, None)
+                    raise TimeoutError(
+                        "timed out waiting for the Overpass dispatcher to stop"
+                    )
+                time.sleep(0.5)
+        MAINTENANCE_STATE.depth = depth + 1
+        return self
+
+    def __exit__(
+        self,
+        exc_type: object,
+        exc_value: object,
+        traceback: object,
+    ) -> None:
+        depth = getattr(MAINTENANCE_STATE, "depth", 0)
+        if depth <= 1:
+            MAINTENANCE_STATE.depth = 0
+            self._heartbeat_stop.set()
+            if self._heartbeat_thread is not None:
+                self._heartbeat_thread.join(timeout=self.heartbeat_seconds + 1)
+            self.path.unlink(missing_ok=True)
+        else:
+            MAINTENANCE_STATE.depth = depth - 1
 
 
 @dataclass
@@ -463,35 +571,36 @@ def process_pending_membership(config: dict[str, Any]) -> None:
     work_dir = Path(config["work_dir"])
     work_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    with tempfile.TemporaryDirectory(prefix="membership-", dir=work_dir) as directory:
-        temp_dir = Path(directory)
-        while pending:
-            root_key = pending[0]
-            try:
-                refresh, catalog = refresh_root(
-                    config,
-                    root_key,
-                    catalog,
-                    temp_dir,
-                    timestamp,
-                    "startup membership",
-                )
-            except OverpassRootNotFoundError:
-                # A successful empty result is terminal: remove only this
-                # queue entry and continue. Network, HTTP, XML, and database
-                # failures still propagate and preserve the current entry.
+    with DispatcherMaintenance(config):
+        with tempfile.TemporaryDirectory(prefix="membership-", dir=work_dir) as directory:
+            temp_dir = Path(directory)
+            while pending:
+                root_key = pending[0]
+                try:
+                    refresh, catalog = refresh_root(
+                        config,
+                        root_key,
+                        catalog,
+                        temp_dir,
+                        timestamp,
+                        "startup membership",
+                    )
+                except OverpassRootNotFoundError:
+                    # A successful empty result is terminal: remove only this
+                    # queue entry and continue. Network, HTTP, XML, and database
+                    # failures still propagate and preserve the current entry.
+                    pending = pending[1:]
+                    if pending:
+                        atomic_json(pending_path, pending)
+                    else:
+                        pending_path.unlink(missing_ok=True)
+                    continue
+                del refresh
                 pending = pending[1:]
                 if pending:
                     atomic_json(pending_path, pending)
                 else:
                     pending_path.unlink(missing_ok=True)
-                continue
-            del refresh
-            pending = pending[1:]
-            if pending:
-                atomic_json(pending_path, pending)
-            else:
-                pending_path.unlink(missing_ok=True)
 
 
 def sequence_path(sequence: int) -> str:
@@ -635,6 +744,16 @@ def log_overpass_update_diagnostics(stderr: str | None) -> None:
 
 
 def update_database(
+    config: dict[str, Any],
+    osc_path: Path,
+    timestamp: str,
+    description: str = "filtered change",
+) -> None:
+    with DispatcherMaintenance(config):
+        _update_database(config, osc_path, timestamp, description)
+
+
+def _update_database(
     config: dict[str, Any],
     osc_path: Path,
     timestamp: str,
@@ -1258,6 +1377,9 @@ class CatalogQueryPool:
         self._refresh_catalog_roots()
         self._schedule_due()
 
+    def has_ready(self) -> bool:
+        return any(future.done() for future in self.futures.values())
+
     def drain_ready(self, *, wait: bool = False, reschedule: bool = True) -> None:
         """Apply completed results in catalog order; never write from workers."""
         if reschedule:
@@ -1311,19 +1433,34 @@ class CatalogQueryPool:
             state = load_json(catalog_path(self.config), {})
             if not isinstance(state, dict):
                 state = {}
-            remote_osc(
-                refresh.path,
-                refresh.objects,
-                set(state.get("roots", [])) | set(state.get("dependencies", [])),
-            )
-            apply_remote_refresh(
-                self.config,
-                root_key,
-                refresh,
-                state,
-                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "catalog background refresh",
-            )
+            try:
+                remote_osc(
+                    refresh.path,
+                    refresh.objects,
+                    set(state.get("roots", [])) | set(state.get("dependencies", [])),
+                )
+                apply_remote_refresh(
+                    self.config,
+                    root_key,
+                    refresh,
+                    state,
+                    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "catalog background refresh",
+                )
+            except Exception as exc:
+                LOG.error(
+                    "%s",
+                    red_console(
+                        f"catalog database update failed for {root_key}: {exc}; "
+                        "replication continues and the root will be retried"
+                    ),
+                )
+                if reschedule:
+                    self.next_due[root_key] = time.monotonic() + max(
+                        1,
+                        int(self.config.get("retry_initial_seconds", 15)),
+                    )
+                continue
             if reschedule:
                 self.next_due[root_key] = time.monotonic() + self.interval_seconds
 
@@ -1332,7 +1469,8 @@ class CatalogQueryPool:
             self._schedule_due()
 
     def close(self) -> None:
-        self.drain_ready(wait=True, reschedule=False)
+        with DispatcherMaintenance(self.config):
+            self.drain_ready(wait=True, reschedule=False)
         self.executor.shutdown(wait=True)
 
 
@@ -1386,9 +1524,30 @@ def catch_up(
 
     with tempfile.TemporaryDirectory(prefix=f"prefetch-{cadence}-", dir=work_dir) as directory:
         prefetcher = Prefetcher(config, cadence, Path(directory))
+        batch_size = max(
+            1,
+            int(
+                config.get(
+                    "initial_update_batch_size" if cadence == "day" else "minute_update_batch_size",
+                    100 if cadence == "day" else 1,
+                )
+            ),
+        )
+        maintenance: DispatcherMaintenance | None = None
+        processed_in_batch = 0
         try:
             while checkpoint["cadence"] == cadence:
-                if catalog_queries is not None:
+                if (
+                    catalog_queries is not None
+                    and (
+                        not apply_database
+                        or catalog_queries.has_ready()
+                    )
+                ):
+                    if apply_database and maintenance is None:
+                        candidate = DispatcherMaintenance(config)
+                        candidate.__enter__()
+                        maintenance = candidate
                     catalog_queries.drain_ready()
                 target = latest(
                     base,
@@ -1398,6 +1557,10 @@ def catch_up(
                 next_sequence = checkpoint["sequence"] + 1
                 if next_sequence > target["sequence"]:
                     break
+                if apply_database and maintenance is None:
+                    candidate = DispatcherMaintenance(config)
+                    candidate.__enter__()
+                    maintenance = candidate
                 prefetcher.fill(next_sequence, target["sequence"])
                 downloaded = prefetcher.take(next_sequence)
                 result = process_one(
@@ -1415,7 +1578,15 @@ def catch_up(
                     "timestamp": result["timestamp"],
                 }
                 atomic_json(Path(config["state_file"]), checkpoint)
+                if apply_database:
+                    processed_in_batch += 1
+                    if processed_in_batch >= batch_size:
+                        maintenance.__exit__(None, None, None)
+                        maintenance = None
+                        processed_in_batch = 0
         finally:
+            if maintenance is not None:
+                maintenance.__exit__(None, None, None)
             prefetcher.close()
     return checkpoint
 
@@ -1480,12 +1651,28 @@ def run(config: dict[str, Any]) -> None:
                 )
 
             if checkpoint["cadence"] == "day":
-                minute_sequence = resolve_minute_start(config, checkpoint["timestamp"])
+                if config.get("minute_start_at_current", False):
+                    current_minute = latest(
+                        config["minute_base_url"],
+                        int(config["retry_initial_seconds"]),
+                        int(config["retry_max_seconds"]),
+                    )
+                    minute_sequence = int(current_minute["sequence"]) + 1
+                    minute_timestamp = current_minute["timestamp"]
+                    LOG.info(
+                        "starting minute replication at current sequence %s; "
+                        "skipping minute history before %s",
+                        minute_sequence,
+                        minute_timestamp,
+                    )
+                else:
+                    minute_sequence = resolve_minute_start(config, checkpoint["timestamp"])
+                    minute_timestamp = checkpoint["timestamp"]
                 checkpoint = {
                     "phase": "apply",
                     "cadence": "minute",
                     "sequence": minute_sequence - 1,
-                    "timestamp": checkpoint["timestamp"],
+                    "timestamp": minute_timestamp,
                 }
                 atomic_json(state_path, checkpoint)
 
