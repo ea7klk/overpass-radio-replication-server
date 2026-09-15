@@ -90,17 +90,12 @@ downloading the source again.
 The following is a source installation of Overpass osm-3s and a package
 installation of Osmium. It assumes a dedicated data volume mounted at
 `/srv`, an administrator account with `sudo`, and a public DNS name if the API
-will be exposed to the Internet. This project has no Python packages beyond
-the standard library; `osmium-tool` is useful for diagnostics and optional
+will be exposed to the Internet. The filter uses `lxml` for C-accelerated,
+incremental XML parsing. `osmium-tool` is useful for diagnostics and optional
 offline OSM processing but is not required by the Python replicator itself.
 
-If a virtual environment is preferred, the requirements file is intentionally
-empty of third-party packages:
-
-```bash
-python3 -m venv /srv/overpass-radio/venv
-/srv/overpass-radio/venv/bin/python -m pip install -r requirements.txt
-```
+The systemd instructions below create a virtual environment and install the
+single Python dependency from `requirements.txt`.
 
 ### Install prerequisites
 
@@ -110,7 +105,7 @@ sudo apt-get install -y \
   ca-certificates curl wget git \
   build-essential autoconf automake libtool \
   expat libexpat1-dev zlib1g-dev liblz4-dev \
-  python3 osmium-tool apache2
+  python3 python3-venv python3-pip osmium-tool apache2
 
 python3 --version
 osmium --version
@@ -190,6 +185,10 @@ sudo git clone https://github.com/ea7klk/overpass-radio-replication-server \
   /opt/overpass-radio-replication-server
 sudo chown -R overpass-radio:overpass-radio \
   /opt/overpass-radio-replication-server
+
+sudo -u overpass-radio /usr/bin/python3 -m venv /srv/overpass-radio/venv
+sudo -u overpass-radio /srv/overpass-radio/venv/bin/python -m pip install \
+  --requirement /opt/overpass-radio-replication-server/requirements.txt
 ```
 
 Create the dispatcher unit:
@@ -232,7 +231,7 @@ Requires=overpass-radio-dispatcher.service
 User=overpass-radio
 Group=overpass-radio
 WorkingDirectory=/opt/overpass-radio-replication-server
-ExecStart=/usr/bin/python3 -m radio_overpass.replicator --config=/etc/overpass-radio.json
+ExecStart=/srv/overpass-radio/venv/bin/python -m radio_overpass.replicator --config=/etc/overpass-radio.json
 Restart=on-failure
 RestartSec=30
 
