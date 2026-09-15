@@ -543,6 +543,14 @@ def update_database(
 ) -> None:
     db_dir = Path(config["db_dir"])
     if not (db_dir / "nodes.map").exists():
+        db_dir.mkdir(parents=True, exist_ok=True)
+        first_entry = next(db_dir.iterdir(), None)
+        if first_entry is not None:
+            raise RuntimeError(
+                f"Overpass DB directory is partially initialized: {db_dir}/nodes.map "
+                f"is missing while {first_entry.name!r} exists; stop the dispatcher, "
+                "move the incomplete database aside, and initialize an empty directory"
+            )
         update_binary = config.get("overpass_update_database")
         if not update_binary:
             update_binary = str(Path(config["overpass_update_from_dir"]).with_name("update_database"))
@@ -555,8 +563,18 @@ def update_database(
                 f"initializing Overpass DB from {osc_path} at {timestamp}"
             ),
         )
-        with osc_path.open("rb") as source:
-            subprocess.run(command, stdin=source, check=True)
+        try:
+            with osc_path.open("rb") as source:
+                subprocess.run(command, stdin=source, check=True)
+        except subprocess.CalledProcessError as exc:
+            LOG.error(
+                "%s",
+                red_console(
+                    f"Overpass DB initialization failed for {osc_path} "
+                    f"(exit {exc.returncode})"
+                ),
+            )
+            raise
         return
 
     command = [
@@ -568,7 +586,16 @@ def update_database(
     if config.get("meta_mode"):
         command.append(config["meta_mode"])
     LOG.info("%s", light_blue_console(f"writing {description} to Overpass DB at {timestamp}"))
-    subprocess.run(command, check=True)
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as exc:
+        LOG.error(
+            "%s",
+            red_console(
+                f"Overpass DB update failed for {description} (exit {exc.returncode})"
+            ),
+        )
+        raise
 
 
 def commit_delta(membership_path: Path, delta_path: Path) -> None:

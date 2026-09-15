@@ -4,6 +4,22 @@ set -euo pipefail
 db_dir="${OVERPASS_DB_DIR:-/srv/overpass-radio/db}"
 mkdir -p "$db_dir" /srv/overpass-radio/work
 
+# The dispatcher cannot create a usable database.  In particular, starting it
+# first on a fresh shared volume leaves update_database looking for nodes.map
+# while another process is using the same incomplete directory.  Seed an
+# empty, valid OSM database before starting either dispatcher or Apache.
+if [[ ! -f "$db_dir/nodes.map" ]]; then
+    first_entry=$(find "$db_dir" -mindepth 1 -maxdepth 1 -print -quit)
+    if [[ -n "$first_entry" ]]; then
+        printf 'Overpass DB is partially initialized: %s is missing nodes.map; refusing to start\n' "$db_dir" >&2
+        printf 'Stop the dispatcher, move the incomplete DB aside, and restart with an empty DB directory.\n' >&2
+        exit 2
+    fi
+    printf 'Initializing empty Overpass database in %s before starting dispatcher\n' "$db_dir"
+    printf '%s\n' '<osm version="0.6" generator="radio-overpass"></osm>' |
+        /opt/overpass/bin/update_database --db-dir="$db_dir" --meta=no
+fi
+
 cors_config=/etc/apache2/conf-enabled/overpass-radio-cors.conf
 {
     printf '%s\n' '# Generated at container start; do not edit inside the container.'

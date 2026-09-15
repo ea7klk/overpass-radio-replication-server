@@ -15,6 +15,7 @@ from radio_overpass.replicator import (
     process_one,
     query_overpass,
     quick_check,
+    update_database,
     light_blue_console,
     light_green_console,
     red_console,
@@ -211,6 +212,44 @@ class QuickCheckTest(unittest.TestCase):
 
             self.assertFalse(pending.exists())
             self.assertIn("node:1", json.loads(catalog.read_text())["roots"])
+
+    def test_startup_membership_remains_after_database_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pending = root / "membership.json"
+            catalog = root / "catalog.json"
+            pending.write_text(json.dumps(["node:1"]), encoding="utf-8")
+            config = {
+                "membership_file": str(pending),
+                "catalog_file": str(catalog),
+                "work_dir": str(root / "work"),
+            }
+            with (
+                patch(
+                    "radio_overpass.replicator.query_overpass",
+                    side_effect=RuntimeError("database unavailable"),
+                ),
+                self.assertRaises(RuntimeError),
+            ):
+                process_pending_membership(config)
+
+            self.assertEqual(json.loads(pending.read_text()), ["node:1"])
+
+    def test_initial_database_requires_a_clean_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_dir = root / "db"
+            db_dir.mkdir()
+            (db_dir / "dispatcher.lock").write_text("partial", encoding="utf-8")
+            source = root / "remote.osm"
+            source.write_text('<osm version="0.6"></osm>\n', encoding="utf-8")
+            config = {
+                "db_dir": str(db_dir),
+                "overpass_update_from_dir": "/opt/overpass/bin/update_from_dir",
+            }
+
+            with self.assertRaisesRegex(RuntimeError, "partially initialized"):
+                update_database(config, source, "2026-09-15T12:00:00Z")
 
 
 if __name__ == "__main__":

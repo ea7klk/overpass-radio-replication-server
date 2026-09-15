@@ -72,13 +72,23 @@ Install:
 
 ```text
 Python 3.10+
-Overpass osm-3s binaries, including update_from_dir and dispatcher
+Overpass osm-3s binaries, including update_database, update_from_dir, and dispatcher
 curl or wget
 ```
 
 Copy `config.example.json` to a private configuration file and adjust paths.
-The updater expects an empty Overpass database directory for the initial
-replay. Start the Overpass dispatcher separately, for example:
+The updater expects an initialized Overpass database directory for the initial
+replay. The dispatcher must not be started against a fresh or partially
+initialized directory. Initialize it once before starting the dispatcher:
+
+```bash
+sudo install -d -o overpass-radio -g overpass-radio /srv/overpass-radio/db
+printf '%s\n' '<osm version="0.6" generator="radio-overpass"></osm>' |
+  sudo -u overpass-radio /opt/overpass/bin/update_database \
+    --db-dir=/srv/overpass-radio/db --meta=no
+```
+
+Then start the Overpass dispatcher separately, for example:
 
 ```bash
 /opt/overpass/bin/dispatcher \
@@ -301,11 +311,16 @@ The file is deleted only after all its entries have been successfully imported;
 failed entries remain available for retry. The persistent root/dependency
 catalog is stored separately in `catalog_file`.
 
-An empty `db_dir` is initialized automatically from the first successful
-public Overpass result with `update_database`; later results use
-`update_from_dir`. This is why both Overpass binaries are required. A startup
-membership entry is acknowledged only after the corresponding database write
-has completed successfully.
+The container performs this empty-database initialization automatically before
+starting its dispatcher. For a systemd installation, run the command above
+once before enabling the dispatcher. If a previous attempt left files in
+`db_dir` but no `nodes.map`, stop the dispatcher and move that incomplete
+directory aside before retrying; the replicator refuses to write into a
+partially initialized database. The first successful public Overpass result
+then uses `update_database`; later results use `update_from_dir`. This is why
+both Overpass binaries are required. A startup membership entry is
+acknowledged only after the corresponding database write has completed
+successfully.
 
 The two-phase bootstrap settings are intended for a new empty database. If a
 checkpoint already exists, the persisted `phase` controls resumption and
