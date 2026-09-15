@@ -21,6 +21,8 @@ from html.parser import HTMLParser
 
 
 LOG = logging.getLogger("radio-overpass")
+PREFETCH_WINDOW = 10
+PREFETCH_WORKERS = 2
 
 
 @dataclass
@@ -212,6 +214,77 @@ def download_change(
             wait = min(max_wait, max(wait * 2, 1))
 
 
+def gzip_contains(
+    source_path: Path,
+    needle: str | None = None,
+    pattern_path: Path | None = None,
+) -> bool:
+    """Search a gzip file without constructing an XML tree.
+
+    grep and gzip do the scan in native code and stop at the first match. A
+    non-match still reads the file once, but avoids the much more expensive XML
+    parser and Python object handling.
+    """
+    if (needle is None) == (pattern_path is None):
+        raise ValueError("provide exactly one quick-check pattern")
+    matcher_command = ["grep", "-a", "-m", "1", "-F"]
+    if pattern_path is not None:
+        matcher_command.extend(("-f", str(pattern_path)))
+    else:
+        matcher_command.append(needle or "")
+    matcher_command.append("-")
+
+    decompressor = subprocess.Popen(
+        ["gzip", "--decompress", "--stdout", str(source_path)],
+        stdout=subprocess.PIPE,
+    )
+    assert decompressor.stdout is not None
+    matcher = subprocess.Popen(
+        matcher_command,
+        stdin=decompressor.stdout,
+        stdout=subprocess.DEVNULL,
+    )
+    decompressor.stdout.close()
+    matcher_status = matcher.wait()
+    gzip_status = decompressor.wait()
+
+    if matcher_status not in (0, 1):
+        raise subprocess.CalledProcessError(matcher_status, matcher_command)
+    # gzip is expected to receive SIGPIPE when grep finds a match early.
+    if matcher_status == 1 and gzip_status != 0:
+        raise subprocess.CalledProcessError(
+            gzip_status, ["gzip", "--decompress", "--stdout", str(source_path)]
+        )
+    return matcher_status == 0
+
+
+def write_id_patterns(pattern_path: Path, object_keys: set[str]) -> bool:
+    object_ids = sorted({key.split(":", 1)[1] for key in object_keys if ":" in key})
+    if not object_ids:
+        return False
+    pattern_path.write_text(
+        "".join(f'id="{object_id}"\n' for object_id in object_ids),
+        encoding="ascii",
+    )
+    return True
+
+
+def quick_check(
+    source_path: Path,
+    prefix: str,
+    retained: set[str],
+    pattern_path: Path,
+) -> str | None:
+    """Return why a source needs parsing, or None if it can be discarded."""
+    if gzip_contains(source_path, needle=prefix):
+        return "tag prefix"
+    if not write_id_patterns(pattern_path, retained):
+        return None
+    if gzip_contains(source_path, pattern_path=pattern_path):
+        return "retained object"
+    return None
+
+
 def filter_file(
     config: dict[str, Any],
     source_path: Path,
@@ -272,14 +345,34 @@ def process_one(
     work_dir = Path(config["work_dir"])
     work_dir.mkdir(parents=True, exist_ok=True)
     membership = Path(config["membership_file"])
+    old_state = load_json(membership, {})
+    if isinstance(old_state, dict):
+        retained = set(old_state.get("roots", [])) | set(old_state.get("dependencies", []))
+        old_dependencies = set(old_state.get("dependencies", []))
+    else:
+        retained = set()
+        old_dependencies = set()
 
     try:
         with tempfile.TemporaryDirectory(prefix=f"{cadence}-{sequence}-", dir=work_dir) as temp:
             temp_path = Path(temp)
             filtered_path = temp_path / "filtered-0.osc"
             delta_path = temp_path / "delta-0.jsonl"
-            old_state = load_json(membership, {})
-            old_dependencies = set(old_state.get("dependencies", [])) if isinstance(old_state, dict) else set()
+            file_started = time.monotonic()
+            first_check = quick_check(
+                downloaded.path,
+                config["tag_key_prefix"],
+                retained,
+                temp_path / "quick-check.ids",
+            )
+            if first_check is None:
+                LOG.info(
+                    "discarded %s replication file %s: quick-check found no "
+                    "matching tags or retained objects",
+                    cadence,
+                    change_url,
+                )
+                return state
             include: set[str] = set()
 
             # A root can reference an object that appears earlier in the same
@@ -288,11 +381,21 @@ def process_one(
             # those IDs. The source file is downloaded only once.
             pass_number = 0
             filter_seconds = 0.0
-            file_started = time.monotonic()
             while True:
                 if pass_number:
                     filtered_path = temp_path / f"filtered-{pass_number}.osc"
                     delta_path = temp_path / f"delta-{pass_number}.jsonl"
+                    quick_check_path = temp_path / "quick-check.ids"
+                    if not write_id_patterns(quick_check_path, include) or not gzip_contains(
+                        downloaded.path, pattern_path=quick_check_path
+                    ):
+                        LOG.info(
+                            "skipping filter replay pass %d for %s: no newly "
+                            "discovered dependent object is present",
+                            pass_number + 1,
+                            change_url,
+                        )
+                        break
                 filter_seconds += filter_file(
                     config, downloaded.path, membership, filtered_path, delta_path, include
                 )
@@ -347,14 +450,14 @@ class Prefetcher:
         self.config = config
         self.cadence = cadence
         self.directory = directory
-        self.executor = ThreadPoolExecutor(max_workers=2)
+        self.executor = ThreadPoolExecutor(max_workers=PREFETCH_WORKERS)
         self.futures: dict[int, Future[DownloadedChange]] = {}
 
     def fill(self, first_sequence: int, target_sequence: int) -> None:
-        # Keep the current file plus the next two files queued. With two
-        # workers, after the current future completes both successors can be
-        # downloading while the current file is filtered and applied.
-        last_sequence = min(target_sequence, first_sequence + 2)
+        # Keep the current file plus the next ten files queued. Two workers
+        # download concurrently; the larger queue keeps the network busy while
+        # the current file is filtered and applied without overloading storage.
+        last_sequence = min(target_sequence, first_sequence + PREFETCH_WINDOW - 1)
         for sequence in range(first_sequence, last_sequence + 1):
             if sequence in self.futures:
                 continue
