@@ -84,6 +84,14 @@ will be exposed to the Internet. This project has no Python packages beyond
 the standard library; `osmium-tool` is useful for diagnostics and optional
 offline OSM processing but is not required by the Python replicator itself.
 
+If a virtual environment is preferred, the requirements file is intentionally
+empty of third-party packages:
+
+```bash
+python3 -m venv /srv/overpass-radio/venv
+/srv/overpass-radio/venv/bin/python -m pip install -r requirements.txt
+```
+
 ### Install prerequisites
 
 ```bash
