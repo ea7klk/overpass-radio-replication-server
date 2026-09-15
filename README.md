@@ -106,6 +106,73 @@ re-read locally with the newly discovered IDs seeded into the filter. This
 handles references that occur earlier in the same change file without
 downloading the source again.
 
+## Container deployment
+
+The repository includes a multi-stage `Dockerfile` and a Compose definition
+with two services:
+
+- `overpass` runs the dispatcher and Apache CGI endpoint.
+- `replicator` runs the resumable updater and includes `osmium-tool` plus the
+  Overpass update scripts it may need.
+
+Both services mount the named `radio-data` volume at
+`/srv/overpass-radio`. The database, checkpoint, membership graph, and work
+files therefore survive container replacement and are available to the
+replicator and Overpass process. Source replication files remain temporary and
+are deleted after processing.
+
+Build and start locally:
+
+```bash
+docker compose up --build -d
+docker compose logs -f replicator
+```
+
+The API is published on port `8080` by default. Set `OVERPASS_PORT` in a `.env`
+file or in the environment to change it. To use a private configuration,
+create a Compose override that adds this read-only mount to `replicator`:
+
+```yaml
+services:
+  replicator:
+    volumes:
+      - radio-data:/srv/overpass-radio
+      - ./overpass-radio.json:/etc/overpass-radio.json:ro
+```
+
+The default container configuration starts the January 2017 two-phase
+bootstrap described above. It uses the container paths `/srv/overpass-radio`
+and `/opt/overpass/bin/update_from_dir`.
+
+Set `ALLOWED_ORIGINS` to a comma-separated list of browser origins, including
+the scheme and optional port, for example:
+
+```bash
+ALLOWED_ORIGINS=https://radio.example.org,https://map.example.org:8443 \
+  docker compose up -d
+```
+
+Apache returns CORS headers only for those exact `Origin` values. Requests with
+no `Referer` remain usable for command-line clients; requests with a non-empty
+`Referer` must begin with one of the approved origins. This is an allowlist,
+not authentication, so put TLS, authentication, and rate limiting in front of
+an Internet-facing deployment as appropriate.
+
+The release workflow runs the tests for pull requests and pushes to `main`.
+It builds both images only for a published GitHub release or an explicit
+workflow dispatch. A published semantic-version release such as `v1.2.3`
+publishes:
+
+```text
+ghcr.io/ea7klk/overpass-radio-replicator:1.2.3
+ghcr.io/ea7klk/overpass-radio-replicator:latest
+ghcr.io/ea7klk/overpass-radio-overpass:1.2.3
+ghcr.io/ea7klk/overpass-radio-overpass:latest
+```
+
+Manual dispatch builds the images without pushing by default; the
+`push_images` input enables an intentional manual push.
+
 ## Debian / Ubuntu server installation
 
 The following is a source installation of Overpass osm-3s and a package

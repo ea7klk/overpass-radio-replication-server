@@ -1,0 +1,39 @@
+services:
+  overpass:
+    build:
+      context: .
+      target: overpass
+    image: ${OVERPASS_IMAGE:-ghcr.io/ea7klk/overpass-radio-overpass:latest}
+    restart: unless-stopped
+    environment:
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      OVERPASS_DB_DIR: /srv/overpass-radio/db
+    ports:
+      - "${OVERPASS_PORT:-8080}:80"
+    volumes:
+      - radio-data:/srv/overpass-radio
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --fail --silent --get http://127.0.0.1/api/interpreter
+          --data-urlencode 'data=[out:json];node(0);out;' >/dev/null
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  replicator:
+    build:
+      context: .
+      target: replicator
+    image: ${REPLICATOR_IMAGE:-ghcr.io/ea7klk/overpass-radio-replicator:latest}
+    restart: unless-stopped
+    depends_on:
+      overpass:
+        condition: service_healthy
+    volumes:
+      - radio-data:/srv/overpass-radio
+
+volumes:
+  radio-data:
