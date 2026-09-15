@@ -29,6 +29,16 @@ front of Overpass.
 
 For each successful sequence, the updater logs every applied root and
 dependency object, plus removals, with the cadence and sequence number.
+It also logs a completion line for every source file, for example:
+
+```text
+completed day replication file ...: passes=1 download=2.4s filter=2.3s apply=0.8s total=3.2s
+```
+
+The download and filter timings overlap because the OSC stream is piped
+directly from `curl`; they should not be added together. Multiple passes mean
+the file was re-streamed to resolve dependencies introduced earlier in that
+same file.
 
 The standard OSM replication feed is OsmChange XML (`.osc.gz`), not PBF. The
 Overpass updater consumes the filtered OSC XML.
@@ -307,6 +317,11 @@ also avoids Python HTTPS/proxy interoperability problems on some servers.
 
 The updater verifies that each next sequence is exactly the previous sequence
 plus one. It never skips a missing or temporarily unavailable file.
+
+For throughput, keep `work_dir` and the Overpass database on SSD storage,
+give the server as much RAM as practical for filesystem caching, and build
+Overpass with `make -j"$(nproc)"`. The replicator already avoids retaining
+source files and avoids extra passes unless new dependency IDs were found.
 
 ## Sources
 
