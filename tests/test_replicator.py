@@ -1,5 +1,6 @@
 import gzip
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,7 @@ from radio_overpass.replicator import (
     PREFETCH_WINDOW,
     process_one,
     quick_check,
+    red_console,
 )
 
 
@@ -50,6 +52,17 @@ class QuickCheckTest(unittest.TestCase):
 
     def test_prefetch_window_is_ten(self):
         self.assertEqual(PREFETCH_WINDOW, 10)
+
+    def test_discovered_root_node_can_be_colored_red(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                red_console("discovered root node:10", is_tty=True),
+                "\033[31mdiscovered root node:10\033[0m",
+            )
+            self.assertEqual(
+                red_console("discovered root node:10", is_tty=False),
+                "discovered root node:10",
+            )
 
     def test_skipped_dependency_replay_keeps_previous_delta(self):
         with tempfile.TemporaryDirectory() as directory:

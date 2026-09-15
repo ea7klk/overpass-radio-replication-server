@@ -23,6 +23,8 @@ from html.parser import HTMLParser
 LOG = logging.getLogger("radio-overpass")
 PREFETCH_WINDOW = 10
 PREFETCH_WORKERS = 2
+ANSI_RED = "\033[31m"
+ANSI_RESET = "\033[0m"
 
 
 @dataclass
@@ -30,6 +32,17 @@ class DownloadedChange:
     path: Path
     state: dict[str, Any]
     seconds: float
+
+
+def red_console(text: str, *, is_tty: bool | None = None) -> str:
+    """Color selected interactive log messages red without adding a dependency."""
+    if os.environ.get("NO_COLOR") is not None:
+        return text
+    if is_tty is None:
+        is_tty = sys.stderr.isatty()
+    if not is_tty and os.environ.get("FORCE_COLOR") != "1":
+        return text
+    return f"{ANSI_RED}{text}{ANSI_RESET}"
 
 
 def sequence_path(sequence: int) -> str:
@@ -455,7 +468,10 @@ def process_one(
                 if item["op"] == "add":
                     kind = "root" if item.get("root") else "dependency"
                     verb = "applied" if apply_database else "discovered"
-                    LOG.info("%s %s %s at replication %s/%s", verb, kind, item["id"], cadence, sequence)
+                    message = f"{verb} {kind} {item['id']} at replication {cadence}/{sequence}"
+                    if not apply_database and item.get("root") and item["id"].startswith("node:"):
+                        message = red_console(message)
+                    LOG.info("%s", message)
                 elif item["op"] == "remove":
                     kind = "root" if item.get("root") else "dependency"
                     verb = "removed" if apply_database else "discovered removal of"

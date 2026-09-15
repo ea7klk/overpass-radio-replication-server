@@ -29,6 +29,9 @@ front of Overpass.
 
 For each successful sequence, the updater logs every applied root and
 dependency object, plus removals, with the cadence and sequence number.
+During the discovery phase, matching root-node messages are red in interactive
+terminals. Set `FORCE_COLOR=1` when the output is being viewed through a log
+wrapper that does not expose a TTY; set `NO_COLOR=1` to disable ANSI colors.
 It also logs a completion line for every source file, for example:
 
 ```text
