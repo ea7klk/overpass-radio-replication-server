@@ -82,11 +82,20 @@ Then run:
 python3 -m radio_overpass.replicator --config /etc/overpass-radio.json
 ```
 
-The first run discovers the oldest daily sequence by traversing the public
-3/3/3 directory index when `daily_start_sequence` is `null`, then replays the
-daily stream through the latest published daily sequence. It resolves the
-corresponding minutely sequence by binary-searching per-sequence state files
-and continues polling the minute stream. The minute index is not enumerated.
+The example starts a two-phase bootstrap at daily sequence `1572`, corresponding
+to January 2017. The discovery phase scans from `daily_start_sequence` through
+the latest daily file and records matching roots, references, and dependencies
+without updating Overpass. It then starts the apply phase at
+`daily_dependency_start_sequence` (`1` in the example) and replays the daily
+stream from the beginning, importing only the retained objects. This safely
+backfills older dependency versions before the database is built.
+
+Set `daily_dependency_start_sequence` to `null` to disable the discovery phase.
+When `daily_start_sequence` is `null`, the oldest sequence is discovered by
+traversing the public 3/3/3 directory index. After the daily replay, the
+corresponding minutely sequence is found by binary-searching per-sequence state
+files and the minute stream is polled continuously. The minute index is not
+enumerated.
 
 Starting from the oldest daily sequence allows dependencies to be promoted as
 their referencing roots appear. The implementation persists the root set,
@@ -183,10 +192,15 @@ Set these values in `/etc/overpass-radio.json`:
 }
 ```
 
-Leave both start-sequence values `null` for the initial historical replay.
-The first run can take a long time. Do not use Overpass's `download_clone.sh`
+For the included example, leave `daily_start_sequence` at `1572`,
+`daily_dependency_start_sequence` at `1`, and `minute_start_sequence` at
+`null`. The two-phase first run can take a long time. Do not use Overpass's `download_clone.sh`
 for this project: it would create a complete worldwide database instead of
 the filtered database built by this repository.
+
+The two-phase bootstrap settings are intended for a new empty database. If a
+checkpoint already exists, the persisted `phase` controls resumption and
+changing these settings does not restart the bootstrap automatically.
 
 ### Start Overpass and the replicator with systemd
 

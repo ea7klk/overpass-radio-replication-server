@@ -333,7 +333,11 @@ def delta_state(items: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def process_one(
-    config: dict[str, Any], cadence: str, downloaded: DownloadedChange
+    config: dict[str, Any],
+    cadence: str,
+    downloaded: DownloadedChange,
+    *,
+    apply_database: bool = True,
 ) -> dict[str, Any]:
     base_key = "daily" if cadence == "day" else cadence
     base = config[f"{base_key}_base_url"]
@@ -433,7 +437,7 @@ def process_one(
 
             has_database_changes = any(item["op"] in {"add", "remove"} for item in events)
             apply_started = time.monotonic()
-            if has_database_changes:
+            if has_database_changes and apply_database:
                 update_database(config, filtered_path, state["timestamp"])
             apply_seconds = time.monotonic() - apply_started
             if events:
@@ -444,10 +448,12 @@ def process_one(
             for item in events:
                 if item["op"] == "add":
                     kind = "root" if item.get("root") else "dependency"
-                    LOG.info("applied %s %s at replication %s/%s", kind, item["id"], cadence, sequence)
+                    verb = "applied" if apply_database else "discovered"
+                    LOG.info("%s %s %s at replication %s/%s", verb, kind, item["id"], cadence, sequence)
                 elif item["op"] == "remove":
                     kind = "root" if item.get("root") else "dependency"
-                    LOG.info("removed %s %s at replication %s/%s", kind, item["id"], cadence, sequence)
+                    verb = "removed" if apply_database else "discovered removal of"
+                    LOG.info("%s %s at replication %s/%s", verb, kind, cadence, sequence)
 
             process_seconds = time.monotonic() - file_started
             LOG.info(
@@ -541,7 +547,11 @@ def resolve_minute_start(config: dict[str, Any], timestamp: str) -> int:
 
 
 def catch_up(
-    config: dict[str, Any], checkpoint: dict[str, Any], cadence: str
+    config: dict[str, Any],
+    checkpoint: dict[str, Any],
+    cadence: str,
+    *,
+    apply_database: bool = True,
 ) -> dict[str, Any]:
     base_key = "daily" if cadence == "day" else cadence
     base = config[f"{base_key}_base_url"]
@@ -562,8 +572,14 @@ def catch_up(
                     break
                 prefetcher.fill(next_sequence, target["sequence"])
                 downloaded = prefetcher.take(next_sequence)
-                result = process_one(config, cadence, downloaded)
+                result = process_one(
+                    config,
+                    cadence,
+                    downloaded,
+                    apply_database=apply_database,
+                )
                 checkpoint = {
+                    "phase": checkpoint.get("phase", "apply"),
                     "cadence": cadence,
                     "sequence": result["sequence"],
                     "timestamp": result["timestamp"],
@@ -588,16 +604,40 @@ def run(config: dict[str, Any]) -> None:
             if not sequences:
                 raise RuntimeError("daily replication index contains no sequences")
             daily_start = sequences[0]
+        dependency_start = config.get("daily_dependency_start_sequence")
+        if dependency_start is not None and int(dependency_start) > int(daily_start):
+            raise ValueError("daily_dependency_start_sequence must not exceed daily_start_sequence")
         checkpoint = {
+            "phase": "discovery" if dependency_start is not None else "apply",
             "cadence": "day",
             "sequence": int(daily_start) - 1,
+            "timestamp": "",
         }
 
-    checkpoint = catch_up(config, checkpoint, "day")
+    discovery = checkpoint.get("phase") == "discovery"
+    checkpoint = catch_up(config, checkpoint, "day", apply_database=not discovery)
+
+    if discovery and checkpoint["cadence"] == "day":
+        dependency_start = config.get("daily_dependency_start_sequence")
+        if dependency_start is None:
+            raise RuntimeError("discovery checkpoint requires daily_dependency_start_sequence")
+        checkpoint = {
+            "phase": "replay",
+            "cadence": "day",
+            "sequence": int(dependency_start) - 1,
+            "timestamp": checkpoint["timestamp"],
+        }
+        atomic_json(state_path, checkpoint)
+        checkpoint = catch_up(config, checkpoint, "day", apply_database=True)
 
     if checkpoint["cadence"] == "day":
         minute_sequence = resolve_minute_start(config, checkpoint["timestamp"])
-        checkpoint = {"cadence": "minute", "sequence": minute_sequence - 1, "timestamp": checkpoint["timestamp"]}
+        checkpoint = {
+            "phase": "apply",
+            "cadence": "minute",
+            "sequence": minute_sequence - 1,
+            "timestamp": checkpoint["timestamp"],
+        }
         atomic_json(state_path, checkpoint)
 
     while True:
