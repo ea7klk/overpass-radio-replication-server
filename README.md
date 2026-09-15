@@ -70,6 +70,11 @@ Starting from the oldest daily sequence allows dependencies to be promoted as
 their referencing roots appear. The implementation persists the root set,
 dependency set, and known reference graph in `membership_file`.
 
+When a change file introduces a new dependency, the source `.osc.gz` is
+re-streamed with the newly discovered IDs seeded into the filter. This handles
+references that occur earlier in the same change file without retaining the
+upstream file on disk.
+
 ## Checkpointing and retries
 
 The checkpoint is written atomically after a successful Overpass update. A
