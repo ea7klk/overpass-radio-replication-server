@@ -49,6 +49,12 @@ events, avoiding Python callbacks for every `tag`, `nd`, and `member` child.
 Processed siblings are removed from the parse tree immediately, keeping memory
 bounded even for large replication files.
 
+Before invoking the XML filter, the replicator performs a native `gzip`/`grep`
+quick-check. Files with neither the configured tag prefix nor an already
+retained object ID are logged as discarded and never enter XML parsing. Replay
+passes are similarly skipped when none of their newly discovered dependency
+IDs occurs in the file.
+
 ## Setup
 
 Install:
@@ -329,9 +335,9 @@ successful application and are safe to remove after an interrupted run.
 
 OSC files are fetched with the system `curl` command, with redirects and
 transient retries enabled. While one file is being filtered and applied, up to
-the next two files are downloaded into a temporary prefetch queue. A source
-file is removed after processing, and dependency re-reads use that same local
-temporary file.
+the next ten files are queued, with two downloads running concurrently. A
+source file is removed after processing, and dependency re-reads use that same
+local temporary file.
 
 The updater verifies that each next sequence is exactly the previous sequence
 plus one. It never skips a missing or temporarily unavailable file.
