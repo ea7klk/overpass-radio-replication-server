@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: overpass-radio-apache-cors
+  namespace: overpass-radio
+data:
+  zz-overpass-radio-cors.conf: |
+    <IfModule mod_headers.c>
+        Header always unset Access-Control-Allow-Origin
+        Header always set Access-Control-Allow-Origin "https://potamap.ea7klk.es" env=radio_cors_allowed
+    </IfModule>

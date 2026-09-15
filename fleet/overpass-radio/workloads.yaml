@@ -102,10 +102,18 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /srv/overpass-radio
+        - name: apache-cors
+          mountPath: /etc/apache2/conf-enabled/zz-overpass-radio-cors.conf
+          subPath: zz-overpass-radio-cors.conf
+          readOnly: true
       volumes:
       - name: data
         persistentVolumeClaim:
           claimName: overpass-radio-data
+      - name: apache-cors
+        configMap:
+          name: overpass-radio-apache-cors
+          defaultMode: 0444
 ---
 apiVersion: apps/v1
 kind: Deployment
