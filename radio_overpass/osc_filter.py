@@ -49,12 +49,20 @@ def osm_key(element: ET.Element) -> str:
     return f"{element.tag}:{element.attrib['id']}"
 
 
-def matches(element: ET.Element, prefix: str) -> bool:
-    return any(
-        child.tag == "tag"
-        and child.attrib.get("k", "").startswith(prefix)
+def matching_tags(element: ET.Element, prefix: str) -> list[tuple[str, str]]:
+    return [
+        (child.attrib["k"], child.attrib.get("v", ""))
         for child in element
-    )
+        if child.tag == "tag" and child.attrib.get("k", "").startswith(prefix)
+    ]
+
+
+def object_name(element: ET.Element) -> str | None:
+    for child in element:
+        if child.tag == "tag" and child.attrib.get("k") == "name":
+            name = child.attrib.get("v", "")
+            return name or None
+    return None
 
 
 def references(element: ET.Element) -> list[str]:
@@ -144,8 +152,19 @@ def main() -> int:
         output_files[group].write(ET.tostring(element, encoding="utf-8"))
         output_files[group].write(b"\n")
 
-    def event(op: str, key: str, root: bool = False) -> None:
-        events.append({"op": op, "id": key, "root": root})
+    def event(
+        op: str,
+        key: str,
+        root: bool = False,
+        name: str | None = None,
+        tags: list[tuple[str, str]] | None = None,
+    ) -> None:
+        item: dict[str, object] = {"op": op, "id": key, "root": root}
+        if name:
+            item["name"] = name
+        if tags:
+            item["tags"] = [{"key": key, "value": value} for key, value in tags]
+        events.append(item)
 
     # lxml parses the XML in optimized C code. Restricting events to the
     # elements that matter avoids a Python callback for the document root,
@@ -171,7 +190,8 @@ def main() -> int:
                     root_attributes = dict(root.attrib)
                 action = parent.tag if parent is not None and parent.tag in GROUPS else "modify"
                 key = osm_key(element)
-                is_root = matches(element, args.prefix)
+                matching = matching_tags(element, args.prefix)
+                is_root = bool(matching)
                 known_root = key in roots
                 known_dependency = key in dependencies
                 object_refs = set(references(element))
@@ -185,7 +205,7 @@ def main() -> int:
                     refs.pop(key, None)
                 elif is_root:
                     emit(action, element)
-                    event("add", key, True)
+                    event("add", key, True, object_name(element), matching)
                     roots.add(key)
                     refs[key] = object_refs
                     promote(key, dependencies, refs)
@@ -195,7 +215,7 @@ def main() -> int:
                     roots.discard(key)
                     if known_dependency:
                         emit(action, element)
-                        event("add", key, False)
+                        event("add", key, False, object_name(element), matching)
                         refs[key] = object_refs
                         promote(key, dependencies, refs)
                     else:

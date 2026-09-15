@@ -41,11 +41,13 @@ class OscFilterTest(unittest.TestCase):
 
     def test_root_promotes_way_nodes(self):
         osc = b'''<?xml version="1.0"?><osmChange version="0.6"><create>
-          <way id="2" version="1"><nd ref="1"/><tag k="communication:amateur_radio" v="repeater"/></way>
+          <way id="2" version="1"><nd ref="1"/><tag k="communication:amateur_radio" v="repeater"/><tag k="name" v="Local Repeater"/></way>
         </create></osmChange>'''
         output, delta = self.run_filter(osc)
         self.assertIn("<way id=\"2\"", output)
         self.assertIn('"dependencies":["node:1"]', delta)
+        self.assertIn('"name":"Local Repeater"', delta)
+        self.assertIn('"tags":[{"key":"communication:amateur_radio","value":"repeater"}]', delta)
 
     def test_dependency_update_is_imported(self):
         osc = b'''<?xml version="1.0"?><osmChange version="0.6"><modify>

@@ -32,6 +32,9 @@ dependency object, plus removals, with the cadence and sequence number.
 During the discovery phase, matching root-node messages are red in interactive
 terminals. Set `FORCE_COLOR=1` when the output is being viewed through a log
 wrapper that does not expose a TTY; set `NO_COLOR=1` to disable ANSI colors.
+Named objects include their `name` tag, and matching objects also include each
+matching tag label and value, for example
+`name='Local Repeater' tags=communication:amateur_radio='repeater'`.
 It also logs a completion line for every source file, for example:
 
 ```text

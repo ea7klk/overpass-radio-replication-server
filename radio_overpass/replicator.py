@@ -23,7 +23,7 @@ from html.parser import HTMLParser
 LOG = logging.getLogger("radio-overpass")
 PREFETCH_WINDOW = 10
 PREFETCH_WORKERS = 2
-ANSI_RED = "\033[31m"
+ANSI_RED = "\033[91m"
 ANSI_RESET = "\033[0m"
 
 
@@ -43,6 +43,28 @@ def red_console(text: str, *, is_tty: bool | None = None) -> str:
     if not is_tty and os.environ.get("FORCE_COLOR") != "1":
         return text
     return f"{ANSI_RED}{text}{ANSI_RESET}"
+
+
+def object_log_message(
+    verb: str,
+    kind: str,
+    object_id: str,
+    cadence: str,
+    sequence: int,
+    name: object = None,
+    tags: object = None,
+) -> str:
+    message = f"{verb} {kind} {object_id} at replication {cadence}/{sequence}"
+    if isinstance(name, str) and name:
+        message += f" name={name!r}"
+    if isinstance(tags, list):
+        rendered_tags = []
+        for tag in tags:
+            if isinstance(tag, dict) and isinstance(tag.get("key"), str):
+                rendered_tags.append(f"{tag['key']}={tag.get('value', '')!r}")
+        if rendered_tags:
+            message += " tags=" + ", ".join(rendered_tags)
+    return message
 
 
 def sequence_path(sequence: int) -> str:
@@ -468,7 +490,15 @@ def process_one(
                 if item["op"] == "add":
                     kind = "root" if item.get("root") else "dependency"
                     verb = "applied" if apply_database else "discovered"
-                    message = f"{verb} {kind} {item['id']} at replication {cadence}/{sequence}"
+                    message = object_log_message(
+                        verb,
+                        kind,
+                        str(item["id"]),
+                        cadence,
+                        sequence,
+                        item.get("name"),
+                        item.get("tags"),
+                    )
                     if not apply_database and item.get("root") and item["id"].startswith("node:"):
                         message = red_console(message)
                     LOG.info("%s", message)

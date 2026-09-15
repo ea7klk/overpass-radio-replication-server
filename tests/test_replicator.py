@@ -9,6 +9,7 @@ from unittest.mock import patch
 from radio_overpass.replicator import (
     DownloadedChange,
     PREFETCH_WINDOW,
+    object_log_message,
     process_one,
     quick_check,
     red_console,
@@ -57,12 +58,27 @@ class QuickCheckTest(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(
                 red_console("discovered root node:10", is_tty=True),
-                "\033[31mdiscovered root node:10\033[0m",
+                "\033[91mdiscovered root node:10\033[0m",
             )
             self.assertEqual(
                 red_console("discovered root node:10", is_tty=False),
                 "discovered root node:10",
             )
+
+    def test_object_log_message_includes_name(self):
+        self.assertEqual(
+            object_log_message(
+                "discovered",
+                "root",
+                "node:10",
+                "day",
+                1816,
+                "Local Repeater",
+                [{"key": "communication:amateur_radio", "value": "repeater"}],
+            ),
+            "discovered root node:10 at replication day/1816 name='Local Repeater' "
+            "tags=communication:amateur_radio='repeater'",
+        )
 
     def test_skipped_dependency_replay_keeps_previous_delta(self):
         with tempfile.TemporaryDirectory() as directory:
