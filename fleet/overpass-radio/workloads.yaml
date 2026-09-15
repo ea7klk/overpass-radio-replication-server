@@ -30,15 +30,14 @@ spec:
         - /bin/sh
         - -c
         args:
-        - >-
-          set -eu;
-          db_dir=/srv/overpass-radio/db;
-          mkdir -p "$db_dir" /srv/overpass-radio/work;
+        - |
+          set -eu
+          db_dir=/srv/overpass-radio/db
+          mkdir -p "$db_dir" /srv/overpass-radio/work
           if [ ! -f "$db_dir/nodes.map" ]; then
-            printf '%s\n'
-            '<osm version="0.6" generator="radio-overpass"><node id="1" lat="0" lon="0" version="1"/></osm>' |
-            /opt/overpass/bin/update_database --db-dir="$db_dir" --meta=no;
-          fi;
+            printf '%s\n' '<osm version="0.6" generator="radio-overpass"><node id="1" lat="0" lon="0" version="1"/></osm>' |
+              /opt/overpass/bin/update_database --db-dir="$db_dir" --meta=no
+          fi
           test -f "$db_dir/nodes.map"
         volumeMounts:
         - name: data
