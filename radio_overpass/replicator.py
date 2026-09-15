@@ -395,10 +395,11 @@ def process_one(
             # those IDs. The source file is downloaded only once.
             pass_number = 0
             filter_seconds = 0.0
+            events: list[dict[str, Any]] = []
             while True:
                 if pass_number:
-                    filtered_path = temp_path / f"filtered-{pass_number}.osc"
-                    delta_path = temp_path / f"delta-{pass_number}.jsonl"
+                    next_filtered_path = temp_path / f"filtered-{pass_number}.osc"
+                    next_delta_path = temp_path / f"delta-{pass_number}.jsonl"
                     quick_check_path = temp_path / "quick-check.ids"
                     quick_check_started = time.monotonic()
                     dependent_present = write_id_patterns(quick_check_path, include) and gzip_contains(
@@ -422,6 +423,11 @@ def process_one(
                             change_url,
                         )
                         break
+                    # Do not replace the paths from the last completed pass
+                    # until this replay is known to be needed. A skipped
+                    # replay has no delta or filtered OSC file to commit/apply.
+                    filtered_path = next_filtered_path
+                    delta_path = next_delta_path
                 filter_seconds += filter_file(
                     config, downloaded.path, membership, filtered_path, delta_path, include
                 )
