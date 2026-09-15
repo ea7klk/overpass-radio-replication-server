@@ -1,5 +1,6 @@
 {
   "db_dir": "/srv/overpass-radio/db",
+  "overpass_update_database": "/opt/overpass/bin/update_database",
   "overpass_update_from_dir": "/opt/overpass/bin/update_from_dir",
   "work_dir": "/srv/overpass-radio/work",
   "state_file": "/srv/overpass-radio/state.json",

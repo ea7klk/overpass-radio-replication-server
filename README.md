@@ -277,6 +277,7 @@ Set these values in `/etc/overpass-radio.json`:
 ```json
 {
   "db_dir": "/srv/overpass-radio/db",
+  "overpass_update_database": "/opt/overpass/bin/update_database",
   "overpass_update_from_dir": "/opt/overpass/bin/update_from_dir",
   "work_dir": "/srv/overpass-radio/work",
   "state_file": "/srv/overpass-radio/state.json",
@@ -299,6 +300,12 @@ as `node:123`, those roots are queried from the public Overpass API at startup.
 The file is deleted only after all its entries have been successfully imported;
 failed entries remain available for retry. The persistent root/dependency
 catalog is stored separately in `catalog_file`.
+
+An empty `db_dir` is initialized automatically from the first successful
+public Overpass result with `update_database`; later results use
+`update_from_dir`. This is why both Overpass binaries are required. A startup
+membership entry is acknowledged only after the corresponding database write
+has completed successfully.
 
 The two-phase bootstrap settings are intended for a new empty database. If a
 checkpoint already exists, the persisted `phase` controls resumption and

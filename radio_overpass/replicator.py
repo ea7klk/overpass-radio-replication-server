@@ -49,6 +49,7 @@ class RemoteRefresh:
     names: dict[str, str]
     tags: dict[str, list[dict[str, str]]]
     seconds: float
+    osm_path: Path | None = None
 
 
 def red_console(text: str, *, is_tty: bool | None = None) -> str:
@@ -182,6 +183,16 @@ def remote_osc(
         output.write(b"<delete>\n</delete>\n</osmChange>\n")
 
 
+def remote_osm(output_path: Path, objects: dict[str, bytes]) -> None:
+    with output_path.open("wb") as output:
+        output.write(b"<?xml version='1.0' encoding='UTF-8'?>\n")
+        output.write(b'<osm version="0.6" generator="radio-overpass">\n')
+        for key in sorted(objects):
+            output.write(objects[key])
+            output.write(b"\n")
+        output.write(b"</osm>\n")
+
+
 def query_overpass(
     config: dict[str, Any],
     root_key: str,
@@ -260,6 +271,8 @@ def query_overpass(
                 )
             else:
                 remote_osc(output_path, objects, known_keys)
+                osm_path = output_path.with_suffix(".osm")
+                remote_osm(osm_path, objects)
                 seconds = time.monotonic() - started
                 LOG.info(
                     "%s",
@@ -269,7 +282,7 @@ def query_overpass(
                         f"for root {root_key} in {seconds:.1f}s"
                     ),
                 )
-                return RemoteRefresh(output_path, objects, refs, names, tags, seconds)
+                return RemoteRefresh(output_path, objects, refs, names, tags, seconds, osm_path)
 
         if attempt < retries:
             LOG.warning(
@@ -370,7 +383,7 @@ def refresh_root(
     )
     update_database(
         config,
-        refresh.path,
+        refresh.osm_path or refresh.path,
         timestamp,
         description=f"public Overpass dependencies/dependents ({context})",
     )
@@ -528,6 +541,24 @@ def update_database(
     timestamp: str,
     description: str = "filtered change",
 ) -> None:
+    db_dir = Path(config["db_dir"])
+    if not (db_dir / "nodes.map").exists():
+        update_binary = config.get("overpass_update_database")
+        if not update_binary:
+            update_binary = str(Path(config["overpass_update_from_dir"]).with_name("update_database"))
+        command = [update_binary, f"--db-dir={db_dir}"]
+        if config.get("meta_mode"):
+            command.append(config["meta_mode"])
+        LOG.info(
+            "%s",
+            light_blue_console(
+                f"initializing Overpass DB from {osc_path} at {timestamp}"
+            ),
+        )
+        with osc_path.open("rb") as source:
+            subprocess.run(command, stdin=source, check=True)
+        return
+
     command = [
         config["overpass_update_from_dir"],
         f"--db-dir={config['db_dir']}",
@@ -844,9 +875,6 @@ def process_one(
             }
             remote_refresh: RemoteRefresh | None = None
             if root_keys and apply_database:
-                pending_path = Path(config["membership_file"])
-                for root_key in root_keys:
-                    enqueue_pending(pending_path, root_key)
                 remote_dir = temp_path / "remote"
                 remote_dir.mkdir()
                 remote_objects: dict[str, bytes] = {}
@@ -871,7 +899,6 @@ def process_one(
                     remote_tags.update(refresh.tags)
                     remote_seconds += refresh.seconds
                     last_remote_path = refresh.path
-                    acknowledge_pending(pending_path, root_key)
                 remote_refresh = RemoteRefresh(
                     last_remote_path,
                     remote_objects,
