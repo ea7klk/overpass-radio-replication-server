@@ -144,6 +144,62 @@ def commit_delta(membership_path: Path, delta_path: Path) -> None:
         atomic_json(membership_path, final_state)
 
 
+def filter_stream(
+    config: dict[str, Any],
+    change_url: str,
+    membership: Path,
+    filtered_path: Path,
+    delta_path: Path,
+    include: set[str],
+) -> None:
+    command = [
+        sys.executable,
+        "-m",
+        "radio_overpass.osc_filter",
+        "--membership",
+        str(membership),
+        "--delta",
+        str(delta_path),
+        "--prefix",
+        config["tag_key_prefix"],
+    ]
+    for dependency_id in sorted(include):
+        command.extend(("--include", dependency_id))
+
+    environment = os.environ.copy()
+    package_root = str(Path(__file__).parent.parent)
+    environment["PYTHONPATH"] = package_root + os.pathsep + environment.get("PYTHONPATH", "")
+    wait = int(config["retry_initial_seconds"])
+    max_wait = int(config["retry_max_seconds"])
+    while True:
+        try:
+            with urllib.request.urlopen(change_url, timeout=120) as raw:
+                with filtered_path.open("wb") as filtered:
+                    subprocess.run(command, stdin=raw, stdout=filtered, check=True, env=environment)
+            return
+        except (OSError, urllib.error.HTTPError, subprocess.CalledProcessError) as exc:
+            LOG.warning("streaming download/filter failed for %s: %s; retrying in %ss", change_url, exc, wait)
+            filtered_path.unlink(missing_ok=True)
+            delta_path.unlink(missing_ok=True)
+            time.sleep(wait)
+            wait = min(max_wait, max(wait * 2, 1))
+
+
+def delta_items(delta_path: Path) -> list[dict[str, Any]]:
+    return [
+        json.loads(line)
+        for line in delta_path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+
+
+def delta_state(items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for item in reversed(items):
+        if item["op"] == "state":
+            return item["state"]
+    return None
+
+
 def process_one(config: dict[str, Any], cadence: str, sequence: int) -> dict[str, Any]:
     base = config[f"{cadence}_base_url"]
     retry = int(config["retry_initial_seconds"])
@@ -157,41 +213,33 @@ def process_one(config: dict[str, Any], cadence: str, sequence: int) -> dict[str
 
     with tempfile.TemporaryDirectory(prefix=f"{cadence}-{sequence}-", dir=work_dir) as temp:
         temp_path = Path(temp)
-        filtered_path = temp_path / "filtered.osc"
-        delta_path = temp_path / "delta.jsonl"
+        filtered_path = temp_path / "filtered-0.osc"
+        delta_path = temp_path / "delta-0.jsonl"
+        old_state = load_json(membership, {})
+        old_dependencies = set(old_state.get("dependencies", [])) if isinstance(old_state, dict) else set()
+        include: set[str] = set()
 
-        command = [
-            sys.executable,
-            "-m",
-            "radio_overpass.osc_filter",
-            "--membership",
-            str(membership),
-            "--delta",
-            str(delta_path),
-            "--prefix",
-            config["tag_key_prefix"],
-        ]
-        environment = os.environ.copy()
-        package_root = str(Path(__file__).parent.parent)
-        environment["PYTHONPATH"] = package_root + os.pathsep + environment.get("PYTHONPATH", "")
-        wait = retry
+        # A root can reference an object that appears earlier in the same OSC
+        # file (for example, a way's nodes). Re-stream the file when a pass
+        # discovers new dependencies, seeding the next pass with those IDs.
+        # This keeps source files off disk while making same-file references
+        # available to Overpass. Most minute files need only one pass.
+        pass_number = 0
         while True:
-            try:
-                with urllib.request.urlopen(change_url, timeout=120) as raw:
-                    with filtered_path.open("wb") as filtered:
-                        subprocess.run(command, stdin=raw, stdout=filtered, check=True, env=environment)
+            if pass_number:
+                filtered_path = temp_path / f"filtered-{pass_number}.osc"
+                delta_path = temp_path / f"delta-{pass_number}.jsonl"
+            filter_stream(config, change_url, membership, filtered_path, delta_path, include)
+            events = delta_items(delta_path)
+            candidate_state = delta_state(events)
+            if candidate_state is None:
                 break
-            except (OSError, urllib.error.HTTPError, subprocess.CalledProcessError) as exc:
-                LOG.warning("streaming download/filter failed for %s: %s; retrying in %ss", change_url, exc, wait)
-                filtered_path.unlink(missing_ok=True)
-                time.sleep(wait)
-                wait = min(max_wait, max(wait * 2, 1))
+            new_dependencies = set(candidate_state.get("dependencies", [])) - (old_dependencies | include)
+            if not new_dependencies:
+                break
+            include.update(new_dependencies)
+            pass_number += 1
 
-        events = [
-            json.loads(line)
-            for line in delta_path.read_text(encoding="utf-8").splitlines()
-            if line
-        ]
         has_database_changes = any(item["op"] in {"add", "remove"} for item in events)
         if has_database_changes:
             update_database(config, filtered_path, state["timestamp"])
