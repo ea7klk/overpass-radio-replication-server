@@ -156,7 +156,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
       - name: wait-for-overpass
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.13
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.15
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -171,7 +171,7 @@ spec:
           done
       containers:
       - name: filterer
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.13
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.15
         imagePullPolicy: IfNotPresent
         command:
         - python
@@ -194,7 +194,7 @@ spec:
           subPath: overpass-radio.json
           readOnly: true
       - name: applier
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.13
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.15
         imagePullPolicy: IfNotPresent
         command:
         - /usr/local/bin/radio-overpass-apply-minute
@@ -245,7 +245,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
       - name: wait-for-overpass
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.14
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.15
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -260,7 +260,7 @@ spec:
           done
       containers:
       - name: dependency-worker
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.14
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.15
         imagePullPolicy: IfNotPresent
         command:
         - python

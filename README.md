@@ -103,10 +103,12 @@ corresponding Planet sequence is different.
 ## Configuration and validation
 
 `config.example.json` documents the runtime paths and settings. The main
-options are `minute_update_batch_size`, `tag_key_prefix`, `minute_base_url`,
+options are `minute_prefetch_window`, `tag_key_prefix`, `minute_base_url`,
 `overpass_query_url`, and `osc_inspection_dir`. Minute updates are staged in
-batches (100 by default) so the official helper can apply multiple consecutive
-diffs in one updater call. Newly discovered roots are queried in batches of 20
+preload windows (20 by default) while the database is behind. Once the worker
+is within that window of the upstream tip, it stages one file at a time. The
+official helper applies the staged standard replication files continuously.
+Newly discovered roots are queried in batches of 20
 with up to four concurrent public queries; the resulting OSC objects are
 combined into one serialized database update per batch.
 

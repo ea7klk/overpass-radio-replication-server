@@ -11,6 +11,11 @@ from radio_overpass import minute_worker
 
 
 class MinuteWorkerTest(unittest.TestCase):
+    def test_prefetch_window_returns_to_one_file_near_upstream_tip(self) -> None:
+        self.assertEqual(minute_worker.next_batch_end(100, 150, 20), 120)
+        self.assertEqual(minute_worker.next_batch_end(100, 120, 20), 101)
+        self.assertEqual(minute_worker.next_batch_end(100, 100, 20), 100)
+
     def test_sequence_state_and_standard_replica_path(self) -> None:
         self.assertEqual(
             minute_worker.sequence_text(7275790, "2026-09-07T00:00:21Z"),

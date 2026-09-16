@@ -283,6 +283,15 @@ def wait_for_applier(db_dir: Path, published: int, poll_seconds: int) -> int:
         time.sleep(max(1, poll_seconds))
 
 
+def next_batch_end(db_sequence: int, upstream_sequence: int, prefetch_window: int) -> int:
+    """Stage up to the preload window while catching up, then one file at a time."""
+    if upstream_sequence <= db_sequence:
+        return db_sequence
+    distance = upstream_sequence - db_sequence
+    window = prefetch_window if distance > prefetch_window else 1
+    return min(upstream_sequence, db_sequence + window)
+
+
 def run(config: dict[str, Any]) -> None:
     db_dir = Path(config["db_dir"])
     work_dir = Path(config["work_dir"])
@@ -293,10 +302,25 @@ def run(config: dict[str, Any]) -> None:
     )
     lock_path = Path(config.get("writer_lock", str(db_dir.parent / ".database-writer.lock")))
     poll = max(1, int(config.get("poll_seconds", 60)))
-    batch_size = max(1, int(config.get("minute_update_batch_size", 100)))
+    prefetch_window = max(
+        1,
+        int(
+            config.get(
+                "minute_prefetch_window",
+                config.get("minute_update_batch_size", 20),
+            )
+        ),
+    )
     work_dir.mkdir(parents=True, exist_ok=True)
     replica_dir.mkdir(parents=True, exist_ok=True)
     common.osc_inspection_directory(config, work_dir).mkdir(parents=True, exist_ok=True)
+
+    LOG.info(
+        "minute filter started with pre-filtering enabled for tag prefix %r; "
+        "staging window=%s files while behind, then one file at a time",
+        config["tag_key_prefix"],
+        prefetch_window,
+    )
 
     while True:
         has_batch = False
@@ -323,7 +347,11 @@ def run(config: dict[str, Any]) -> None:
                         int(config["retry_max_seconds"]),
                     )
                     first = db_sequence + 1
-                    last = min(current["sequence"], db_sequence + batch_size)
+                    last = next_batch_end(
+                        db_sequence,
+                        int(current["sequence"]),
+                        prefetch_window,
+                    )
                     if first <= last:
                         working_membership = work_dir / "working-membership.json"
                         initial_state = common.load_json(Path(config["catalog_file"]), {})
