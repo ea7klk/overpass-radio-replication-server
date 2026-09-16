@@ -154,7 +154,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
       - name: wait-for-overpass
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.10
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.11
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -169,7 +169,7 @@ spec:
           done
       containers:
       - name: replicator
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.10
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.11
         imagePullPolicy: IfNotPresent
         env:
         - name: CONFIG_PATH

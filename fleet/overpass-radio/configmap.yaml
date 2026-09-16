@@ -9,6 +9,7 @@ data:
       "db_dir": "/srv/overpass-radio/db",
       "overpass_update_from_dir": "/opt/overpass/bin/update_from_dir",
       "work_dir": "/srv/overpass-radio/work",
+      "osc_inspection_dir": "/srv/overpass-radio/osc-inspection",
       "state_file": "/srv/overpass-radio/state.json",
       "membership_file": "/srv/overpass-radio/membership.json",
       "catalog_file": "/srv/overpass-radio/catalog.json",

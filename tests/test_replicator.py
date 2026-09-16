@@ -24,10 +24,51 @@ from radio_overpass.replicator import (
     light_turquoise_console,
     overpass_query,
     overpass_update_diagnostics,
+    prune_osc_inspection_dir,
+    retain_osc_artifact,
     red_console,
     RemoteRefresh,
     OverpassRootNotFoundError,
 )
+
+
+class OscInspectionRetentionTest(unittest.TestCase):
+    def test_retains_generated_osc_in_configured_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "minute-7275957" / "filtered-0.osc"
+            source.parent.mkdir()
+            source.write_bytes(b"<osmChange>inspect me</osmChange>")
+            inspection = root / "inspection"
+
+            retained = retain_osc_artifact(
+                {"osc_inspection_dir": str(inspection)}, source
+            )
+
+            self.assertEqual(retained.parent, inspection)
+            self.assertEqual(retained.suffix, ".osc")
+            self.assertEqual(retained.read_bytes(), source.read_bytes())
+
+    def test_prunes_only_osc_files_older_than_24_hours(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inspection = Path(directory)
+            stale = inspection / "stale.osc"
+            recent = inspection / "recent.osc"
+            unrelated = inspection / "stale.txt"
+            stale.write_text("old", encoding="utf-8")
+            recent.write_text("new", encoding="utf-8")
+            unrelated.write_text("keep", encoding="utf-8")
+            now = time.time()
+            os.utime(stale, (now - 25 * 60 * 60, now - 25 * 60 * 60))
+            os.utime(recent, (now - 60, now - 60))
+            os.utime(unrelated, (now - 25 * 60 * 60, now - 25 * 60 * 60))
+
+            removed = prune_osc_inspection_dir(inspection, now=now)
+
+            self.assertEqual(removed, 1)
+            self.assertFalse(stale.exists())
+            self.assertTrue(recent.exists())
+            self.assertTrue(unrelated.exists())
 
 
 class QuickCheckTest(unittest.TestCase):
@@ -159,6 +200,9 @@ class QuickCheckTest(unittest.TestCase):
             self.assertEqual(result["sequence"], 1816)
             self.assertFalse(source.exists())
             self.assertEqual(json.loads(catalog.read_text())["dependencies"], ["node:1"])
+            retained = list((root / "osc-inspection").glob("*.osc"))
+            self.assertEqual(len(retained), 1)
+            self.assertEqual(retained[0].read_text(encoding="utf-8"), "<osmChange/>")
 
     def test_public_root_queries_run_in_parallel_before_ordered_writes(self):
         with tempfile.TemporaryDirectory() as directory:

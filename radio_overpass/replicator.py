@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import subprocess
 import tempfile
@@ -27,6 +28,7 @@ from html.parser import HTMLParser
 LOG = logging.getLogger("radio-overpass")
 PREFETCH_WINDOW = 10
 PREFETCH_WORKERS = 2
+OSC_INSPECTION_RETENTION_SECONDS = 24 * 60 * 60
 ANSI_RED = "\033[91m"
 ANSI_LIGHT_GREEN = "\033[92m"
 ANSI_LIGHT_BLUE = "\033[94m"
@@ -322,6 +324,63 @@ def remote_osm(output_path: Path, objects: dict[str, bytes]) -> None:
         output.write(b"</osm>\n")
 
 
+def osc_inspection_directory(config: dict[str, Any], fallback: Path) -> Path:
+    configured = config.get("osc_inspection_dir")
+    if configured:
+        return Path(configured)
+    if config.get("work_dir"):
+        return Path(config["work_dir"]).parent / "osc-inspection"
+    return fallback.parent / "osc-inspection"
+
+
+def prune_osc_inspection_dir(
+    directory: Path,
+    *,
+    now: float | None = None,
+) -> int:
+    """Remove retained OSC artifacts older than the 24-hour inspection window."""
+    if not directory.exists():
+        return 0
+    cutoff = (time.time() if now is None else now) - OSC_INSPECTION_RETENTION_SECONDS
+    removed = 0
+    for path in directory.rglob("*.osc"):
+        try:
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+                removed += 1
+        except OSError as exc:
+            LOG.warning("could not prune expired OSC inspection artifact %s: %s", path, exc)
+    return removed
+
+
+def retain_osc_artifact(config: dict[str, Any], source: Path) -> Path:
+    """Atomically copy a generated OSC file to persistent inspection storage."""
+    directory = osc_inspection_directory(config, source)
+    directory.mkdir(parents=True, exist_ok=True)
+    prune_osc_inspection_dir(directory)
+
+    source_context = re.sub(r"[^A-Za-z0-9_.-]+", "-", source.parent.name).strip(".-")
+    source_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", source.stem).strip(".-")
+    filename = f"{source_context or 'generated'}-{source_name or 'change'}-{time.time_ns()}.osc"
+    destination = directory / filename
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=".osc-inspection-", suffix=".tmp", dir=directory, delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            with source.open("rb") as generated:
+                shutil.copyfileobj(generated, handle)
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, destination)
+    except OSError as exc:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise RuntimeError(f"could not retain generated OSC file {source}: {exc}") from exc
+    LOG.info("retained generated OSC for inspection: %s", destination)
+    return destination
+
+
 def query_overpass(
     config: dict[str, Any],
     root_key: str,
@@ -408,6 +467,7 @@ def query_overpass(
                 break
             else:
                 remote_osc(output_path, objects, known_keys)
+                retain_osc_artifact(config, output_path)
                 osm_path = output_path.with_suffix(".osm")
                 remote_osm(osm_path, objects)
                 seconds = time.monotonic() - started
@@ -1128,6 +1188,7 @@ def process_one(
                 filter_seconds += filter_file(
                     config, downloaded.path, catalog, filtered_path, delta_path, include
                 )
+                retain_osc_artifact(config, filtered_path)
                 events = delta_items(delta_path)
                 candidate_state = delta_state(events)
                 if candidate_state is None:
@@ -1616,6 +1677,10 @@ def catch_up(
 
 
 def run(config: dict[str, Any]) -> None:
+    inspection_dir = osc_inspection_directory(config, Path(config["work_dir"]))
+    removed = prune_osc_inspection_dir(inspection_dir)
+    if removed:
+        LOG.info("pruned %d expired OSC inspection artifact(s)", removed)
     process_pending_membership(config)
     state_path = Path(config["state_file"])
     work_dir = Path(config["work_dir"])
@@ -1704,6 +1769,9 @@ def run(config: dict[str, Any]) -> None:
                 atomic_json(state_path, checkpoint)
 
             while True:
+                removed = prune_osc_inspection_dir(inspection_dir)
+                if removed:
+                    LOG.info("pruned %d expired OSC inspection artifact(s)", removed)
                 checkpoint = catch_up(
                     config,
                     checkpoint,

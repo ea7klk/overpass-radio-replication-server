@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ['v*']
   release:
     types: [published]
   workflow_dispatch:
@@ -42,7 +43,7 @@ jobs:
         run: docker compose config --quiet
 
   image-metadata:
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     needs: tests
     runs-on: ubuntu-latest
     outputs:
@@ -54,6 +55,7 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_PUSH: ${{ inputs.push_images }}
@@ -62,6 +64,9 @@ jobs:
           set -euo pipefail
           if [[ "$EVENT_NAME" == release ]]; then
             raw_version="$RELEASE_TAG"
+            push_images=true
+          elif [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
+            raw_version="${GITHUB_REF#refs/tags/}"
             push_images=true
           else
             raw_version="${INPUT_VERSION:-0.0.0-manual}"
@@ -80,7 +85,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   images:
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     needs: image-metadata
     runs-on: ubuntu-latest
     strategy:

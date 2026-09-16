@@ -520,22 +520,25 @@ the radio-tagged roots.
 
 The checkpoint is written atomically after a successful Overpass update. A
 failed download or failed database update leaves the checkpoint unchanged, so
-the same sequence is retried. Temporary filtered batches are removed after a
-successful application and are safe to remove after an interrupted run.
+the same sequence is retried. Generated filtered and public-query `.osc` files
+are copied to `osc_inspection_dir` on the persistent volume before application
+and retained for 24 hours, including files from failed attempts. Older `.osc`
+files are pruned at replicator startup and whenever a new artifact is retained.
 
 OSC files are fetched with the system `curl` command, with redirects and
 transient retries enabled. While one file is being filtered and applied, up to
 the next ten files are queued, with two downloads running concurrently. A
-source file is removed after processing, and dependency re-reads use that same
-local temporary file.
+downloaded source file is removed after processing, and dependency re-reads use
+that same local temporary file. The inspection directory contains generated
+OSC output only; source downloads and other temporary files are not retained.
 
 The updater verifies that each next sequence is exactly the previous sequence
 plus one. It never skips a missing or temporarily unavailable file.
 
-For throughput, keep `work_dir` and the Overpass database on SSD storage,
-give the server as much RAM as practical for filesystem caching, and build
-Overpass with `make -j"$(nproc)"`. The replicator already avoids retaining
-source files and avoids extra passes unless new dependency IDs were found.
+For throughput, keep `work_dir`, `osc_inspection_dir`, and the Overpass database
+on SSD storage, give the server as much RAM as practical for filesystem caching,
+and build Overpass with `make -j"$(nproc)"`. The replicator avoids extra passes
+unless new dependency IDs were found.
 
 ## Sources
 
