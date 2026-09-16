@@ -120,6 +120,10 @@ bash -n docker/overpass/entrypoint.sh docker/replicator/entrypoint.sh \
 docker compose config --quiet
 ```
 
-Pushing a semantic-version tag such as `v0.0.12` runs tests and publishes the
-replicator and Overpass images to GHCR. Fleet image tags must be updated to a
-published version before deployment.
+Pushing a semantic-version tag runs tests and publishes the replicator image to
+GHCR. The Overpass API image is pinned separately in Fleet and does not need to
+be rebuilt for replicator releases. To build an Overpass image, run the
+`Tests and container images` workflow manually and select the `overpass` target
+(or `both` to build both images). Enable `Push manually built images to GHCR`
+when the result should be published. Fleet image tags must refer to published
+versions before deployment.

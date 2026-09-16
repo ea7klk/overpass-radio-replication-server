@@ -18,6 +18,15 @@ on:
         required: false
         type: boolean
         default: false
+      image_target:
+        description: Image target to build manually
+        required: false
+        type: choice
+        options:
+          - replicator
+          - overpass
+          - both
+        default: replicator
 
 permissions:
   contents: read
@@ -50,6 +59,7 @@ jobs:
       owner: ${{ steps.meta.outputs.owner }}
       version: ${{ steps.meta.outputs.version }}
       push: ${{ steps.meta.outputs.push }}
+      targets: ${{ steps.meta.outputs.targets }}
     steps:
       - id: meta
         shell: bash
@@ -59,18 +69,27 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_PUSH: ${{ inputs.push_images }}
+          INPUT_TARGET: ${{ inputs.image_target }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" == release ]]; then
             raw_version="$RELEASE_TAG"
             push_images=true
+            targets='["replicator"]'
           elif [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
             raw_version="${GITHUB_REF#refs/tags/}"
             push_images=true
+            targets='["replicator"]'
           else
             raw_version="${INPUT_VERSION:-0.0.0-manual}"
             push_images="${INPUT_PUSH:-false}"
+            case "${INPUT_TARGET:-replicator}" in
+              replicator) targets='["replicator"]' ;;
+              overpass) targets='["overpass"]' ;;
+              both) targets='["replicator","overpass"]' ;;
+              *) echo "Unknown image target: $INPUT_TARGET" >&2; exit 1 ;;
+            esac
           fi
           if [[ ! "$raw_version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
             echo "Not a semantic version: $raw_version" >&2
@@ -82,6 +101,7 @@ jobs:
             echo "owner=$owner"
             echo "version=$version"
             echo "push=$push_images"
+            echo "targets=$targets"
           } >> "$GITHUB_OUTPUT"
 
   images:
@@ -91,7 +111,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [replicator, overpass]
+        target: ${{ fromJSON(needs.image-metadata.outputs.targets) }}
     steps:
       - uses: actions/checkout@v4
       - name: Log in to GitHub Container Registry
