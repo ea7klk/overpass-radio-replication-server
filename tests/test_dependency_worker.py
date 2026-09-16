@@ -12,6 +12,18 @@ from radio_overpass.replicator import RemoteRefresh
 
 
 class DependencyWorkerTest(unittest.TestCase):
+    def test_idle_logging_defaults_to_five_minutes(self) -> None:
+        self.assertEqual(
+            dependency_worker.idle_log_interval_seconds({"dependency_poll_seconds": 30}),
+            300,
+        )
+        self.assertEqual(
+            dependency_worker.idle_log_interval_seconds(
+                {"dependency_poll_seconds": 30, "dependency_idle_log_interval_seconds": 90}
+            ),
+            90,
+        )
+
     def test_apply_uses_an_isolated_osc_directory_without_stopping_dispatcher(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

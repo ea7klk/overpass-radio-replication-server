@@ -23,6 +23,14 @@ from .minute_worker import queue_path, read_sequence, writer_lock
 LOG = logging.getLogger("radio-overpass.dependencies")
 
 
+def idle_log_interval_seconds(config: dict[str, Any]) -> int:
+    """Return a bounded interval for periodic idle status messages."""
+    poll = max(1, int(config.get("dependency_poll_seconds", 30)))
+    return max(
+        poll, int(config.get("dependency_idle_log_interval_seconds", 300))
+    )
+
+
 def apply_osc_without_stopping_dispatcher(
     config: dict[str, Any], osc_path: Path, version: str
 ) -> None:
@@ -172,12 +180,38 @@ def run(config: dict[str, Any]) -> None:
     retry_max = max(retry_wait, int(config.get("retry_max_seconds", 900)))
     poll = max(1, int(config.get("dependency_poll_seconds", 30)))
     batch_size = max(1, int(config.get("dependency_query_batch_size", 20)))
+    idle_log_interval = idle_log_interval_seconds(config)
+    next_idle_log = 0.0
+
+    LOG.info(
+        "dependency worker started: queue=%s catalog=%s db=%s poll=%ss batch=%s",
+        queue_dir,
+        config["catalog_file"],
+        config["db_dir"],
+        poll,
+        batch_size,
+    )
 
     while True:
         tasks = sorted(queue_dir.glob("*.json")) if queue_dir.exists() else []
         if not tasks:
+            now = time.monotonic()
+            if now >= next_idle_log:
+                db_cursor = read_sequence(Path(config["db_dir"]) / "replicate_id")
+                published_cursor = read_sequence(
+                    replica_dir / "replicate_id", db_cursor
+                )
+                LOG.info(
+                    "dependency worker idle: no queued roots; db_cursor=%s "
+                    "published_minute_cursor=%s",
+                    db_cursor if db_cursor is not None else "unavailable",
+                    published_cursor if published_cursor is not None else "unavailable",
+                )
+                next_idle_log = now + idle_log_interval
             time.sleep(poll)
             continue
+        next_idle_log = 0.0
+        LOG.info("dependency worker found %d queued root(s)", len(tasks))
         try:
             catalog = common.load_json(Path(config["catalog_file"]), {})
             active_roots = set(catalog.get("roots", [])) if isinstance(catalog, dict) else set()

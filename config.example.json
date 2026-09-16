@@ -19,6 +19,7 @@
   "dependency_query_batch_size": 20,
   "dependency_query_workers": 4,
   "dependency_poll_seconds": 30,
+  "dependency_idle_log_interval_seconds": 300,
   "tag_key_prefix": "communication:amateur_radio",
   "meta_mode": "--meta=no"
 }
