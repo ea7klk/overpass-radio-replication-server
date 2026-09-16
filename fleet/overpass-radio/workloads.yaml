@@ -24,7 +24,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
       - name: initialize-overpass-from-pbf
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.11
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.12
         imagePullPolicy: IfNotPresent
         command:
         - /usr/local/bin/radio-overpass-initial-import
@@ -41,6 +41,8 @@ spec:
           value: /srv/overpass-radio/snapshot-from-pbf.json
         - name: TAG_KEY_PREFIX
           value: communication:amateur_radio
+        - name: INITIAL_REPLICATE_ID
+          value: "7275789"
         volumeMounts:
         - name: data
           mountPath: /srv/overpass-radio
@@ -131,21 +133,21 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: overpass-radio-replicator
+  name: overpass-radio-minute
   namespace: overpass-radio
   labels:
-    app.kubernetes.io/name: overpass-radio-replicator
+    app.kubernetes.io/name: overpass-radio-minute
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      app.kubernetes.io/name: overpass-radio-replicator
+      app.kubernetes.io/name: overpass-radio-minute
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: overpass-radio-replicator
+        app.kubernetes.io/name: overpass-radio-minute
     spec:
       automountServiceAccountToken: false
       imagePullSecrets:
@@ -154,7 +156,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
       - name: wait-for-overpass
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.11
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.12
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -163,20 +165,112 @@ spec:
         - >-
           until curl --noproxy '*' --fail --silent --get
           http://overpass/api/interpreter
-          --data-urlencode 'data=[out:json];node(1);out;'; do
+          --data-urlencode 'data=[out:json];node(1);out;' | grep -q '"version"'; do
             echo 'waiting for the local Overpass API';
             sleep 5;
           done
       containers:
-      - name: replicator
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.11
+      - name: filterer
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.12
         imagePullPolicy: IfNotPresent
+        command:
+        - python
+        - -m
+        - radio_overpass.minute_worker
+        - --config
+        - /etc/overpass-radio.json
         env:
         - name: CONFIG_PATH
           value: /etc/overpass-radio.json
         resources:
           requests:
+            cpu: 500m
+            memory: 1Gi
+        volumeMounts:
+        - name: data
+          mountPath: /srv/overpass-radio
+        - name: config
+          mountPath: /etc/overpass-radio.json
+          subPath: overpass-radio.json
+          readOnly: true
+      - name: applier
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.12
+        imagePullPolicy: IfNotPresent
+        command:
+        - /usr/local/bin/radio-overpass-apply-minute
+        env:
+        - name: OVERPASS_DB_DIR
+          value: /srv/overpass-radio/db
+        - name: FILTERED_REPLICA_DIR
+          value: /srv/overpass-radio/filtered-replica
+        resources:
+          requests:
             cpu: 100m
+            memory: 512Mi
+        volumeMounts:
+        - name: data
+          mountPath: /srv/overpass-radio
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: overpass-radio-data
+      - name: config
+        configMap:
+          name: overpass-radio-config
+          defaultMode: 0444
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: overpass-radio-dependencies
+  namespace: overpass-radio
+  labels:
+    app.kubernetes.io/name: overpass-radio-dependencies
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: overpass-radio-dependencies
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: overpass-radio-dependencies
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+      - name: registry-credentials
+      nodeSelector:
+        kubernetes.io/hostname: spainip-k3s
+      initContainers:
+      - name: wait-for-overpass
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.12
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        args:
+        - >-
+          until curl --noproxy '*' --fail --silent --get
+          http://overpass/api/interpreter
+          --data-urlencode 'data=[out:json];node(1);out;' | grep -q '"version"'; do
+            echo 'waiting for the local Overpass API';
+            sleep 5;
+          done
+      containers:
+      - name: dependency-worker
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.12
+        imagePullPolicy: IfNotPresent
+        command:
+        - python
+        - -m
+        - radio_overpass.dependency_worker
+        - --config
+        - /etc/overpass-radio.json
+        resources:
+          requests:
+            cpu: 250m
             memory: 512Mi
         volumeMounts:
         - name: data

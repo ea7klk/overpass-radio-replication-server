@@ -53,20 +53,27 @@ class OscInspectionRetentionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             inspection = Path(directory)
             stale = inspection / "stale.osc"
+            stale_compressed = inspection / "stale.osc.gz"
             recent = inspection / "recent.osc"
             unrelated = inspection / "stale.txt"
             stale.write_text("old", encoding="utf-8")
+            stale_compressed.write_bytes(gzip.compress(b"old compressed"))
             recent.write_text("new", encoding="utf-8")
             unrelated.write_text("keep", encoding="utf-8")
             now = time.time()
             os.utime(stale, (now - 25 * 60 * 60, now - 25 * 60 * 60))
+            os.utime(
+                stale_compressed,
+                (now - 25 * 60 * 60, now - 25 * 60 * 60),
+            )
             os.utime(recent, (now - 60, now - 60))
             os.utime(unrelated, (now - 25 * 60 * 60, now - 25 * 60 * 60))
 
             removed = prune_osc_inspection_dir(inspection, now=now)
 
-            self.assertEqual(removed, 1)
+            self.assertEqual(removed, 2)
             self.assertFalse(stale.exists())
+            self.assertFalse(stale_compressed.exists())
             self.assertTrue(recent.exists())
             self.assertTrue(unrelated.exists())
 

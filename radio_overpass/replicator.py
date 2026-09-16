@@ -343,13 +343,14 @@ def prune_osc_inspection_dir(
         return 0
     cutoff = (time.time() if now is None else now) - OSC_INSPECTION_RETENTION_SECONDS
     removed = 0
-    for path in directory.rglob("*.osc"):
-        try:
-            if path.is_file() and path.stat().st_mtime < cutoff:
-                path.unlink(missing_ok=True)
-                removed += 1
-        except OSError as exc:
-            LOG.warning("could not prune expired OSC inspection artifact %s: %s", path, exc)
+    for pattern in ("*.osc", "*.osc.gz"):
+        for path in directory.rglob(pattern):
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+                    removed += 1
+            except OSError as exc:
+                LOG.warning("could not prune expired OSC inspection artifact %s: %s", path, exc)
     return removed
 
 

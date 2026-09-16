@@ -7,11 +7,29 @@ work_dir="${OVERPASS_WORK_DIR:-/srv/overpass-radio/work}"
 catalog_file="${CATALOG_FILE:-/srv/overpass-radio/catalog.json}"
 metadata_file="${SNAPSHOT_METADATA_FILE:-/srv/overpass-radio/initial-snapshot.json}"
 tag_prefix="${TAG_KEY_PREFIX:-communication:amateur_radio}"
+initial_replicate_id="${INITIAL_REPLICATE_ID:-}"
+
+seed_replicate_id() {
+    [ -z "$initial_replicate_id" ] && return 0
+    case "$initial_replicate_id" in
+        *[!0-9]*)
+            echo "INITIAL_REPLICATE_ID must be a non-negative integer" >&2
+            exit 2
+            ;;
+    esac
+    temporary_cursor="$db_dir/.replicate_id.tmp"
+    printf '%s\n' "$initial_replicate_id" > "$temporary_cursor"
+    mv "$temporary_cursor" "$db_dir/replicate_id"
+    echo "Seeded Overpass replicate_id=$initial_replicate_id from the initial PBF boundary"
+}
 
 mkdir -p "$db_dir" "$work_dir"
 
 if [ -f "$metadata_file" ]; then
     if [ -f "$db_dir/nodes.map" ]; then
+        if [ ! -f "$db_dir/replicate_id" ]; then
+            seed_replicate_id
+        fi
         echo "Initial PBF import already completed; reusing the existing database"
         exit 0
     fi
@@ -59,6 +77,7 @@ python -m radio_overpass.import_progress "$filtered_xml" \
     --meta=no
 
 test -f "$db_dir/nodes.map"
+seed_replicate_id
 
 mv "$temporary_catalog" "$catalog_file"
 mv "$temporary_metadata" "$metadata_file"

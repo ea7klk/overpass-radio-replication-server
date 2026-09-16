@@ -1,10 +1,32 @@
 services:
+  initial-import:
+    build:
+      context: .
+      target: replicator
+    image: ${REPLICATOR_IMAGE:-ghcr.io/ea7klk/overpass-radio-replicator:latest}
+    restart: "no"
+    environment:
+      WORKER_MODE: initial-import
+      INITIAL_PBF_PATH: /initial/planet-260907.osm.pbf
+      INITIAL_REPLICATE_ID: ${INITIAL_REPLICATE_ID:-7275789}
+      OVERPASS_DB_DIR: /srv/overpass-radio/db
+      OVERPASS_WORK_DIR: /srv/overpass-radio/work-from-pbf
+      CATALOG_FILE: /srv/overpass-radio/catalog.json
+      SNAPSHOT_METADATA_FILE: /srv/overpass-radio/initial-snapshot.json
+      TAG_KEY_PREFIX: communication:amateur_radio
+    volumes:
+      - radio-data:/srv/overpass-radio
+      - ${INITIAL_PBF_PATH:-/root/planet-260907.osm.pbf}:/initial/planet-260907.osm.pbf:ro
+
   overpass:
     build:
       context: .
       target: overpass
     image: ${OVERPASS_IMAGE:-ghcr.io/ea7klk/overpass-radio-overpass:latest}
     restart: unless-stopped
+    depends_on:
+      initial-import:
+        condition: service_completed_successfully
     environment:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       OVERPASS_DB_DIR: /srv/overpass-radio/db
@@ -23,17 +45,53 @@ services:
       retries: 10
       start_period: 30s
 
-  replicator:
+  minute-filter:
     build:
       context: .
       target: replicator
     image: ${REPLICATOR_IMAGE:-ghcr.io/ea7klk/overpass-radio-replicator:latest}
     restart: unless-stopped
+    environment:
+      WORKER_MODE: minute-filter
+      CONFIG_PATH: /etc/overpass-radio.json
     depends_on:
       overpass:
         condition: service_healthy
     volumes:
       - radio-data:/srv/overpass-radio
+      - ./docker/replicator/config.json:/etc/overpass-radio.json:ro
+
+  minute-applier:
+    build:
+      context: .
+      target: replicator
+    image: ${REPLICATOR_IMAGE:-ghcr.io/ea7klk/overpass-radio-replicator:latest}
+    restart: unless-stopped
+    environment:
+      WORKER_MODE: minute-applier
+      OVERPASS_DB_DIR: /srv/overpass-radio/db
+      FILTERED_REPLICA_DIR: /srv/overpass-radio/filtered-replica
+    depends_on:
+      overpass:
+        condition: service_healthy
+    volumes:
+      - radio-data:/srv/overpass-radio
+
+  dependencies:
+    build:
+      context: .
+      target: replicator
+    image: ${REPLICATOR_IMAGE:-ghcr.io/ea7klk/overpass-radio-replicator:latest}
+    restart: unless-stopped
+    environment:
+      WORKER_MODE: dependencies
+      CONFIG_PATH: /etc/overpass-radio.json
+    depends_on:
+      overpass:
+        condition: service_healthy
+    volumes:
+      - radio-data:/srv/overpass-radio
+      - ./docker/replicator/config.json:/etc/overpass-radio.json:ro
 
 volumes:
   radio-data:
