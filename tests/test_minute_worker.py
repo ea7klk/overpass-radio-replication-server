@@ -72,6 +72,62 @@ class MinuteWorkerTest(unittest.TestCase):
                 "sequenceNumber=7275790\ntimestamp=2026-09-07T00:00:21Z\n",
             )
 
+    def test_type_collision_in_quick_check_stages_empty_minute(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            download = root / "downloads" / "source.osc.gz"
+            download.parent.mkdir()
+            source_osc = b'''<?xml version="1.0"?>
+<osmChange version="0.6"><modify>
+  <way id="1" version="2"><nd ref="10"/><nd ref="11"/></way>
+</modify></osmChange>'''
+            with gzip.open(download, "wb") as zipped:
+                zipped.write(source_osc)
+
+            membership = root / "catalog.json"
+            old_state = {"roots": ["node:1"], "dependencies": [], "refs": {}}
+            membership.write_text(json.dumps(old_state), encoding="utf-8")
+            work = root / "work"
+            work.mkdir()
+            config = {
+                "minute_base_url": "https://replication.invalid/minute/",
+                "retry_initial_seconds": 1,
+                "retry_max_seconds": 2,
+                "tag_key_prefix": "communication:amateur_radio",
+                "catalog_file": str(membership),
+                "work_dir": str(work),
+                "osc_inspection_dir": str(root / "inspection"),
+            }
+            state = {"sequence": 7275823, "timestamp": "2026-09-07T00:34:01Z"}
+            with (
+                patch.object(minute_worker.common, "fetch_state", return_value=state),
+                patch.object(
+                    minute_worker.common,
+                    "download_change",
+                    return_value=minute_worker.common.DownloadedChange(download, state, 0.1),
+                ),
+                patch.object(minute_worker.common, "retain_osc_artifact"),
+            ):
+                result = minute_worker.stage_change(
+                    config,
+                    7275823,
+                    membership,
+                    root / "replica",
+                    work,
+                )
+
+            self.assertEqual(result, state)
+            self.assertEqual(json.loads(membership.read_text(encoding="utf-8")), old_state)
+            self.assertEqual(
+                minute_worker.delta_path(work, 7275823).read_text(encoding="utf-8"),
+                "",
+            )
+            osc_path = minute_worker.replica_path(root / "replica", 7275823, ".osc.gz")
+            with gzip.open(osc_path, "rb") as zipped:
+                filtered = zipped.read()
+            self.assertIn(b"<osmChange", filtered)
+            self.assertNotIn(b"<way", filtered)
+
     def test_applied_batch_commits_last_membership_and_queues_new_roots(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

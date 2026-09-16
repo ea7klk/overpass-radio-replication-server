@@ -162,7 +162,16 @@ def stage_change(
                 candidate_items = common.delta_items(events_path)
                 candidate_state = common.delta_state(candidate_items)
                 if candidate_state is None:
-                    raise RuntimeError(f"filter produced no final membership state for {sequence}")
+                    # quick_check intentionally uses a cheap, type-agnostic
+                    # ID scan. An object of another OSM type can therefore
+                    # trigger parsing without being retained by osc_filter.
+                    # The filter omits a state event when it emitted no
+                    # changes; in that case this minute is a valid no-op.
+                    if candidate_items:
+                        raise RuntimeError(
+                            f"filter produced no final membership state for {sequence}"
+                        )
+                    break
                 discovered = set(candidate_state.get("dependencies", [])) - (
                     old_dependencies | include
                 )
