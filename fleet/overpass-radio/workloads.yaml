@@ -32,7 +32,7 @@ spec:
         - name: INITIAL_PBF_PATH
           value: /initial/planet-260907.osm.pbf
         - name: OVERPASS_DB_DIR
-          value: /srv/overpass-radio/db-from-pbf
+          value: /srv/overpass-radio/db
         - name: OVERPASS_WORK_DIR
           value: /srv/overpass-radio/work-from-pbf
         - name: CATALOG_FILE
@@ -55,7 +55,7 @@ spec:
         - name: ALLOWED_ORIGINS
           value: https://potamap.ea7klk.es
         - name: OVERPASS_DB_DIR
-          value: /srv/overpass-radio/db-from-pbf
+          value: /srv/overpass-radio/db
         - name: OVERPASS_MAINTENANCE_LOCK
           value: /srv/overpass-radio/.maintenance.lock
         - name: OVERPASS_MAINTENANCE_LOCK_STALE_SECONDS

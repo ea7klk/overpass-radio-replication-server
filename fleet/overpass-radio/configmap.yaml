@@ -6,7 +6,7 @@ metadata:
 data:
   overpass-radio.json: |
     {
-      "db_dir": "/srv/overpass-radio/db-from-pbf",
+      "db_dir": "/srv/overpass-radio/db",
       "overpass_update_from_dir": "/opt/overpass/bin/update_from_dir",
       "work_dir": "/srv/overpass-radio/work-from-pbf",
       "osc_inspection_dir": "/srv/overpass-radio/osc-inspection-from-pbf",
