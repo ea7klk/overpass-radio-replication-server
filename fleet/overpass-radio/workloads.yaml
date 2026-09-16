@@ -24,7 +24,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
       - name: initialize-overpass-from-pbf
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.10
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.11
         imagePullPolicy: IfNotPresent
         command:
         - /usr/local/bin/radio-overpass-initial-import
@@ -32,13 +32,13 @@ spec:
         - name: INITIAL_PBF_PATH
           value: /initial/planet-260907.osm.pbf
         - name: OVERPASS_DB_DIR
-          value: /srv/overpass-radio/db
+          value: /srv/overpass-radio/db-from-pbf
         - name: OVERPASS_WORK_DIR
-          value: /srv/overpass-radio/work
+          value: /srv/overpass-radio/work-from-pbf
         - name: CATALOG_FILE
-          value: /srv/overpass-radio/catalog.json
+          value: /srv/overpass-radio/catalog-from-pbf.json
         - name: SNAPSHOT_METADATA_FILE
-          value: /srv/overpass-radio/initial-snapshot.json
+          value: /srv/overpass-radio/snapshot-from-pbf.json
         - name: TAG_KEY_PREFIX
           value: communication:amateur_radio
         volumeMounts:
@@ -55,7 +55,7 @@ spec:
         - name: ALLOWED_ORIGINS
           value: https://potamap.ea7klk.es
         - name: OVERPASS_DB_DIR
-          value: /srv/overpass-radio/db
+          value: /srv/overpass-radio/db-from-pbf
         - name: OVERPASS_MAINTENANCE_LOCK
           value: /srv/overpass-radio/.maintenance.lock
         - name: OVERPASS_MAINTENANCE_LOCK_STALE_SECONDS
