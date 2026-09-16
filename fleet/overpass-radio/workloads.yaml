@@ -245,7 +245,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
       - name: wait-for-overpass
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.12
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.14
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -260,7 +260,7 @@ spec:
           done
       containers:
       - name: dependency-worker
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.12
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.14
         imagePullPolicy: IfNotPresent
         command:
         - python
