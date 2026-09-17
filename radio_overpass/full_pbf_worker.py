@@ -27,6 +27,9 @@ from . import replicator as common
 
 LOG = logging.getLogger("radio-overpass.full-pbf")
 CADENCES = ("day", "hour", "minute")
+FILTERED_ARTIFACT = re.compile(
+    r"^filtered-(day|hour|minute)-([0-9]{9})-([0-9]{9})\.osm\.pbf$"
+)
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -134,6 +137,78 @@ def inactive_slot(config: dict[str, Any]) -> str:
 
 def slot_dir(config: dict[str, Any], slot: str) -> Path:
     return config_path(config, "db_root") / slot
+
+
+def pending_filtered_artifact(
+    config: dict[str, Any], cadence: str, first: int, full_state: dict[str, Any]
+) -> tuple[Path, int, str] | None:
+    if full_state.get("cadence") != cadence:
+        return None
+    full_sequence = int(full_state.get("sequence", -1))
+    if full_sequence < first:
+        return None
+    filtered_dir = config_path(config, "filtered_dir")
+    candidates: list[tuple[int, Path]] = []
+    for path in filtered_dir.glob(f"filtered-{cadence}-{first:09d}-*.osm.pbf"):
+        match = FILTERED_ARTIFACT.match(path.name)
+        if not match or int(match.group(2)) != first:
+            continue
+        last = int(match.group(3))
+        if last == full_sequence:
+            candidates.append((last, path))
+    if not candidates:
+        return None
+    last, artifact = max(candidates)
+    timestamp = str(full_state.get("timestamp", ""))
+    if not timestamp:
+        return None
+    return artifact, last, timestamp
+
+
+def recover_filtered_artifact(
+    config: dict[str, Any], state: dict[str, Any]
+) -> dict[str, Any] | None:
+    cadence = str(state.get("cadence", ""))
+    if cadence not in CADENCES:
+        return None
+    first = int(state.get("sequence", -1)) + 1
+    full_state_path = config.get("full_pbf_state_file")
+    if not full_state_path:
+        return None
+    full_state = load_json(Path(str(full_state_path)), None)
+    if not isinstance(full_state, dict):
+        return None
+    recovery = pending_filtered_artifact(config, cadence, first, full_state)
+    if recovery is None:
+        return None
+    artifact, last, timestamp = recovery
+    LOG.info(
+        "recovering existing filtered PBF %s for %s batch %s through %s; "
+        "skipping full-PBF merge/apply",
+        artifact,
+        cadence,
+        first,
+        last,
+    )
+    config["last_change_timestamp"] = timestamp
+    import_filtered_pbf(config, artifact, inactive_slot(config))
+    for sequence in range(first, last + 1):
+        (config_path(config, "raw_dir") / cadence / f"{sequence:09d}.osc.gz").unlink(
+            missing_ok=True
+        )
+    recovered = {
+        "cadence": cadence,
+        "sequence": last,
+        "timestamp": timestamp,
+        "last_batch_applied_at": time.time(),
+    }
+    write_json(config_path(config, "state_file"), recovered)
+    LOG.info(
+        "recovered filtered database batch %s through %s; replication state advanced",
+        first,
+        last,
+    )
+    return recovered
 
 
 def apply_full_changes(
@@ -418,6 +493,10 @@ def run(config: dict[str, Any]) -> None:
         write_json(state_path, state)
         LOG.info("starting raw global replication after fresh PBF boundary %s", timestamp)
     while True:
+        recovered = recover_filtered_artifact(config, state)
+        if recovered is not None:
+            state = recovered
+            continue
         cadence = str(state["cadence"])
         retry, maximum = retry_values(config)
         target = int(common.latest(cadence_base(config, cadence), retry, maximum)["sequence"])

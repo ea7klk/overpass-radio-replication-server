@@ -47,6 +47,11 @@ This prevents the API process from deleting a partially initialized database
 while Overpass `update_database` is still writing files such as
 `nodes.bin`.
 
+If the full-PBF step completed but the replacement import was interrupted,
+the worker detects the matching `filtered-<cadence>-<first>-<last>.osm.pbf`
+artifact and resumes from that file. It advances replication state only after
+the replacement import succeeds, so it does not repeat the full-PBF update.
+
 When a replacement slot is ready, a second Overpass dispatcher/API instance
 serves it and passes a local health check before the active slot marker is
 switched. Traefik's Service then routes only to the healthy active slot, so the
