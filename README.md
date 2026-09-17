@@ -68,6 +68,11 @@ old API remains available during the handoff. The retired slot is removed only
 after its dispatcher has stopped. Files without matching tags do not trigger a
 filtered rebuild or slot switch.
 
+Each API container checks the container-local dispatcher socket before startup.
+If no dispatcher process in that container owns the socket, it removes the
+stale socket left by a previous container instance; an in-use socket is left
+untouched. This prevents a pod restart from entering a dispatcher crash loop.
+
 `osmium tags-filter` retains referenced nodes and relation members by default;
 do not pass `--omit-referenced`/`-R`. The explicit CLI used for the initial
 extract is:

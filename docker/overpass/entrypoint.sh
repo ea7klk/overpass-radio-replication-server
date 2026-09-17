@@ -6,6 +6,7 @@ state_dir="${OVERPASS_STATE_DIR:-/srv/overpass-radio/state}"
 ready_slot_file="${OVERPASS_READY_SLOT_FILE:-$state_dir/ready-slot}"
 active_slot_file="${OVERPASS_ACTIVE_SLOT_FILE:-$state_dir/active-slot}"
 building_slot_file="${OVERPASS_BUILDING_SLOT_FILE:-$state_dir/building-slot}"
+dispatcher_socket="${OVERPASS_DISPATCHER_SOCKET:-/osm3s_osm_base}"
 
 slot="${OVERPASS_SLOT:-}"
 if [[ -z "$slot" ]]; then
@@ -31,8 +32,31 @@ sed -i "s#__OVERPASS_DB_DIR__#${db_dir}#g" /etc/apache2/conf-enabled/overpass-ra
 dispatcher_pid=''
 apache_pid=''
 
+dispatcher_process_running() {
+    local proc commandline
+    for proc in /proc/[0-9]*; do
+        [[ "$proc" == "/proc/$$" || ! -r "$proc/cmdline" ]] && continue
+        commandline=$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null || true)
+        if [[ "$commandline" == *"dispatcher --osm-base --db-dir=$db_dir"* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+clear_stale_dispatcher_socket() {
+    [[ -e "$dispatcher_socket" || -L "$dispatcher_socket" ]] || return 0
+    if dispatcher_process_running; then
+        printf 'Dispatcher socket %s is in use; leaving it intact\n' "$dispatcher_socket"
+        return 0
+    fi
+    rm -f -- "$dispatcher_socket"
+    printf 'Removed stale dispatcher socket %s before startup\n' "$dispatcher_socket"
+}
+
 start_dispatcher() {
     [[ -f "$db_dir/nodes.map" ]] || return 0
+    clear_stale_dispatcher_socket
     /opt/overpass/bin/dispatcher --osm-base --db-dir="$db_dir" --allow-duplicate-queries=yes &
     dispatcher_pid=$!
     printf 'Started Overpass dispatcher for %s slot (pid %s)\n' "$slot" "$dispatcher_pid"
