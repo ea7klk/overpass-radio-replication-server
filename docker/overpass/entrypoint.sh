@@ -44,19 +44,22 @@ dispatcher_process_running() {
     return 1
 }
 
-clear_stale_dispatcher_socket() {
-    [[ -e "$dispatcher_socket" || -L "$dispatcher_socket" ]] || return 0
-    if dispatcher_process_running; then
-        printf 'Dispatcher socket %s is in use; leaving it intact\n' "$dispatcher_socket"
-        return 0
-    fi
-    rm -f -- "$dispatcher_socket"
-    printf 'Removed stale dispatcher socket %s before startup\n' "$dispatcher_socket"
+clear_stale_dispatcher_sockets() {
+    local socket
+    for socket in "$dispatcher_socket" "$db_dir/osm3s_osm_base"; do
+        [[ -e "$socket" || -L "$socket" ]] || continue
+        if dispatcher_process_running; then
+            printf 'Dispatcher socket %s is in use; leaving it intact\n' "$socket"
+            continue
+        fi
+        rm -f -- "$socket"
+        printf 'Removed stale dispatcher socket %s before startup\n' "$socket"
+    done
 }
 
 start_dispatcher() {
     [[ -f "$db_dir/nodes.map" ]] || return 0
-    clear_stale_dispatcher_socket
+    clear_stale_dispatcher_sockets
     /opt/overpass/bin/dispatcher --osm-base --db-dir="$db_dir" --allow-duplicate-queries=yes &
     dispatcher_pid=$!
     printf 'Started Overpass dispatcher for %s slot (pid %s)\n' "$slot" "$dispatcher_pid"
