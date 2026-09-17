@@ -762,6 +762,13 @@ def atomic_json(path: Path, value: Any) -> None:
     os.replace(temporary, path)
 
 
+def atomic_text(path: Path, value: str) -> None:
+    """Replace a small coordination file without exposing a partial value."""
+    temporary = path.with_suffix(path.suffix + ".new")
+    temporary.write_text(value, encoding="utf-8")
+    os.replace(temporary, path)
+
+
 def load_json(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
