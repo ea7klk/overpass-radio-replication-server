@@ -119,23 +119,30 @@ def stage_change(
     downloaded = common.download_change(config, "minute", sequence, download_path)
     temporary = Path(tempfile.mkdtemp(prefix=f"minute-{sequence}-", dir=work_dir))
     try:
-        old_state = common.load_json(membership, {})
-        if not isinstance(old_state, dict):
-            raise ValueError(f"membership state is not an object: {membership}")
-        retained = set(old_state.get("roots", [])) | set(old_state.get("dependencies", []))
         filtered_path = temporary / "filtered.osc"
         events_path = temporary / "delta.jsonl"
-        reason = common.quick_check(
-            downloaded.path,
-            config["tag_key_prefix"],
-            retained,
-            temporary / "quick-check.ids",
-        )
-        if reason is None:
+        tag_prefix = config["tag_key_prefix"]
+        accepted = common.gzip_contains_tag_prefix(downloaded.path, tag_prefix)
+        if not accepted:
             ensure_empty_osc(filtered_path)
             events_path.write_text("", encoding="utf-8")
-            LOG.info("minute/%s has no retained or matching objects", sequence)
+            LOG.info(
+                "minute/%s discarded by tag pre-filter: no tag key starts with %r; "
+                "source will not be retained for inspection",
+                sequence,
+                tag_prefix,
+            )
+            next_state = None
         else:
+            LOG.info(
+                "minute/%s accepted by tag pre-filter: found tag key starting with %r; "
+                "entering XML filtering",
+                sequence,
+                tag_prefix,
+            )
+            old_state = common.load_json(membership, {})
+            if not isinstance(old_state, dict):
+                raise ValueError(f"membership state is not an object: {membership}")
             include: set[str] = set()
             old_dependencies = set(old_state.get("dependencies", []))
             pass_number = 0
@@ -182,9 +189,11 @@ def stage_change(
             if not filtered_path.is_file() or filtered_path.stat().st_size == 0:
                 ensure_empty_osc(filtered_path)
 
-        items = common.delta_items(events_path)
-        next_state = common.delta_state(items) or old_state
-        common.retain_osc_artifact(config, filtered_path)
+            items = common.delta_items(events_path)
+            next_state = common.delta_state(items) or old_state
+
+        if accepted:
+            common.retain_osc_artifact(config, filtered_path)
 
         staged_osc = replica_path(replica_dir, sequence, ".osc.gz")
         gzip_atomic(filtered_path, staged_osc)
@@ -195,15 +204,24 @@ def stage_change(
         temporary_delta = staged_delta.with_name(f".{staged_delta.name}.tmp-{os.getpid()}")
         shutil.copyfile(events_path, temporary_delta)
         os.replace(temporary_delta, staged_delta)
-        common.atomic_json(membership, next_state)
-        LOG.info(
-            "staged minute/%s (%s); filtered=%s, membership roots=%s dependencies=%s",
-            sequence,
-            state["timestamp"],
-            reason or "empty",
-            len(next_state.get("roots", [])),
-            len(next_state.get("dependencies", [])),
-        )
+        if accepted:
+            assert next_state is not None
+            common.atomic_json(membership, next_state)
+            LOG.info(
+                "staged minute/%s (%s); accepted and XML-filtered, membership roots=%s "
+                "dependencies=%s",
+                sequence,
+                state["timestamp"],
+                len(next_state.get("roots", [])),
+                len(next_state.get("dependencies", [])),
+            )
+        else:
+            LOG.info(
+                "staged minute/%s (%s); discarded by tag pre-filter, emitted empty "
+                "sequence and left membership unchanged",
+                sequence,
+                state["timestamp"],
+            )
         return state
     finally:
         downloaded.path.unlink(missing_ok=True)

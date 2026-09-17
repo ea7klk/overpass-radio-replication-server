@@ -8,9 +8,36 @@ import unittest
 from unittest.mock import patch
 
 from radio_overpass import minute_worker
+from radio_overpass import replicator
 
 
 class MinuteWorkerTest(unittest.TestCase):
+    def test_gzip_tag_prefilter_matches_only_tag_keys_with_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "change.osc.gz"
+            with gzip.open(source, "wb") as zipped:
+                zipped.write(
+                    b'<osmChange><modify><node id="1"><tag k="name" '
+                    b'v="communication:amateur_radio-not-a-key"/></node></modify></osmChange>'
+                )
+            self.assertFalse(
+                replicator.gzip_contains_tag_prefix(
+                    source, "communication:amateur_radio"
+                )
+            )
+
+            with gzip.open(source, "wb") as zipped:
+                zipped.write(
+                    b'<osmChange><modify><node id="1"><tag '
+                    b'k="communication:amateur_radio:pota" v="yes"/></node>'
+                    b'</modify></osmChange>'
+                )
+            self.assertTrue(
+                replicator.gzip_contains_tag_prefix(
+                    source, "communication:amateur_radio"
+                )
+            )
+
     def test_prefetch_window_returns_to_one_file_near_upstream_tip(self) -> None:
         self.assertEqual(minute_worker.next_batch_end(100, 150, 20), 120)
         self.assertEqual(minute_worker.next_batch_end(100, 120, 20), 101)
@@ -56,8 +83,8 @@ class MinuteWorkerTest(unittest.TestCase):
                     "download_change",
                     return_value=minute_worker.common.DownloadedChange(download, state, 0.1),
                 ),
-                patch.object(minute_worker.common, "quick_check", return_value=None),
-                patch.object(minute_worker.common, "retain_osc_artifact"),
+                patch.object(minute_worker.common, "gzip_contains_tag_prefix", return_value=False),
+                patch.object(minute_worker.common, "retain_osc_artifact") as retain,
             ):
                 result = minute_worker.stage_change(
                     config,
@@ -76,6 +103,7 @@ class MinuteWorkerTest(unittest.TestCase):
                 state_path.read_text(encoding="utf-8"),
                 "sequenceNumber=7275790\ntimestamp=2026-09-07T00:00:21Z\n",
             )
+            retain.assert_not_called()
 
     def test_type_collision_in_quick_check_stages_empty_minute(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -9,11 +9,14 @@ kept current from Planet's minutely replication stream.
 
 The minute pipeline has two cooperating containers:
 
-1. `radio_overpass.minute_worker` downloads minutely `.osc.gz` changes, filters
-   them to matching roots and retained dependencies, and stages standard
-   `sequence/sequence/sequence.osc.gz` plus `.state.txt` files in a local
-   replica directory. It publishes each batch only after all its files are
-   complete.
+1. `radio_overpass.minute_worker` downloads minutely `.osc.gz` changes and
+   first performs a grep-like scan for a tag key beginning with
+   `communication:amateur_radio`. Files failing that pre-filter are discarded
+   immediately and are not retained for inspection. Accepted files are then
+   filtered to matching roots and retained dependencies, and standard
+   `sequence/sequence/sequence.osc.gz` plus `.state.txt` files are staged in a
+   local replica directory. It publishes each batch only after all its files
+   are complete.
 2. The official Overpass `/opt/overpass/bin/apply_osc_to_db.sh` runs
    continuously against that directory. It calls `update_from_dir`, preserves
    the dispatcher's normal query service, and advances the database's
@@ -35,8 +38,9 @@ database cursor confirms the batch was applied. The database's `replicate_id`
 is the authoritative applied cursor; pending membership deltas permit recovery
 if a worker restarts during a batch.
 
-Generated filtered and dependency-query OSC artifacts are retained under
-`osc_inspection_dir` for 24 hours. Raw downloaded Planet files are temporary.
+Generated filtered and dependency-query OSC artifacts from accepted files are
+retained under `osc_inspection_dir` for 24 hours. Raw downloaded Planet files,
+including files rejected by the pre-filter, are temporary.
 The initial import logs progress every 5,000 OSM objects.
 
 ## Snapshot boundary and restart

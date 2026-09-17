@@ -976,6 +976,7 @@ def gzip_contains(
     source_path: Path,
     needle: str | None = None,
     pattern_path: Path | None = None,
+    regex: bool = False,
 ) -> bool:
     """Search a gzip file without constructing an XML tree.
 
@@ -985,7 +986,7 @@ def gzip_contains(
     """
     if (needle is None) == (pattern_path is None):
         raise ValueError("provide exactly one quick-check pattern")
-    matcher_command = ["grep", "-a", "-m", "1", "-F"]
+    matcher_command = ["grep", "-a", "-m", "1", "-E" if regex else "-F"]
     if pattern_path is not None:
         matcher_command.extend(("-f", str(pattern_path)))
     else:
@@ -1014,6 +1015,17 @@ def gzip_contains(
             gzip_status, ["gzip", "--decompress", "--stdout", str(source_path)]
         )
     return matcher_status == 0
+
+
+def gzip_contains_tag_prefix(source_path: Path, prefix: str) -> bool:
+    """Return whether a gzipped OSM change file contains a matching tag key.
+
+    This is deliberately a conservative, grep-like candidate check. It only
+    decides whether the expensive XML filter should run; the XML parser still
+    performs the authoritative object and reference handling.
+    """
+    pattern = rf'<tag[^>]*[[:space:]]k="{re.escape(prefix)}[^"]*"'
+    return gzip_contains(source_path, needle=pattern, regex=True)
 
 
 def write_id_patterns(pattern_path: Path, object_keys: set[str]) -> bool:
