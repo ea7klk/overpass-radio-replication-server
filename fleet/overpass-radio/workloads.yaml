@@ -26,7 +26,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       containers:
       - name: overpass
-        image: ghcr.io/ea7klk/overpass-radio-overpass:0.1.6
+        image: ghcr.io/ea7klk/overpass-radio-overpass:0.1.7
         imagePullPolicy: IfNotPresent
         env:
         - name: ALLOWED_ORIGINS
@@ -134,7 +134,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
       - name: download-fresh-planet
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.5
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.7
         imagePullPolicy: IfNotPresent
         command: [/usr/local/bin/radio-overpass-planet-bootstrap]
         env:
@@ -144,7 +144,7 @@ spec:
         - name: planet
           mountPath: /srv/planet
       - name: initialize-filtered-staging
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.5
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.7
         imagePullPolicy: IfNotPresent
         command: [/usr/local/bin/radio-overpass-initial-staging]
         env:
@@ -171,7 +171,7 @@ spec:
           mountPath: /srv/state
       containers:
       - name: full-pbf-replication
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.5
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.7
         imagePullPolicy: IfNotPresent
         command: [/usr/local/bin/radio-overpass-full-pbf-entrypoint]
         env:

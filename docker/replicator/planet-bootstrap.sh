@@ -37,7 +37,7 @@ PY
 fi
 current_size=''
 if [[ -L "$stable_file" && -s "$stable_file" ]]; then
-    current_size=$(stat -c '%s' "$stable_file")
+    current_size=$(stat -Lc '%s' "$stable_file")
 fi
 
 if [[ "$new_torrent_sha" == "$old_torrent_sha" && -n "$recorded_size" && "$current_size" == "$recorded_size" ]]; then
