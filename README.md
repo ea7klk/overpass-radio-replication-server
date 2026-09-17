@@ -4,6 +4,8 @@ This repository maintains an Overpass database containing only objects with a
 `communication:amateur_radio*` tag and the referenced OSM dependencies needed
 to represent those objects. The initial Planet file is downloaded and kept
 under the pipeline's control; no host `hostPath` PBF is used.
+Only current OSM objects are imported: all database imports use `--meta=no`
+and no attic or historical data is requested.
 
 ## Runtime design
 
@@ -105,3 +107,5 @@ prebuilt `wiktorn/overpass-api:v0.7.62.11` binary distribution as a build
 stage, so the osm-3s compiler stage is no longer run for every release. The
 image remains wrapped in this repository's Debian/Apache image so the custom
 cutover entrypoint and Traefik-facing API layout are preserved.
+The redesigned pipeline begins at release `v0.1.0`; subsequent redesigned
+releases should increment from that version.
