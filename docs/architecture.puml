@@ -1,0 +1,51 @@
+@startuml
+title Filtered Overpass rebuild and replication
+skinparam shadowing false
+skinparam componentStyle rectangle
+
+start
+:Check planet-latest.osm.pbf.torrent;
+if (Initial download or newer torrent?) then (yes)
+  :aria2c downloads/resumes
+  fresh full Planet PBF;
+else (no)
+  :Use latest locally controlled
+  full Planet PBF;
+endif
+:Keep full Planet PBF as source of truth;
+
+partition "Initial staging" {
+  :osmium tags-filter
+  communication:amateur_radio*;
+  note right
+    Referenced nodes, ways and relations
+    are retained by default.
+  end note
+  :Import filtered PBF into wiped staging DB;
+}
+
+partition "Ordered replication" {
+  :Download raw daily changes;
+  :Discard files without
+  communication:amateur_radio*;
+  :osmium apply-changes
+  to the full Planet PBF;
+  if (Matching tag found?) then (yes)
+    :osmium tags-filter full PBF;
+    :Import filtered PBF into staging DB;
+    :Fetch dependencies/dependents
+    from external Overpass;
+    :Apply successful external results;
+    :Request database cutover;
+  else (no)
+    :Advance full-PBF checkpoint;
+  endif
+  :Repeat in order: daily, hourly, minute;
+}
+
+:Stop dispatcher briefly;
+:Atomically replace live DB with staging DB;
+:Start dispatcher and verify API;
+:Delete retired DB after health check;
+stop
+@enduml

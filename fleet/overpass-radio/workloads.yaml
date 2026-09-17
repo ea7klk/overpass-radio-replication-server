@@ -24,23 +24,25 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       containers:
       - name: overpass
-        image: ghcr.io/ea7klk/overpass-radio-overpass:0.0.20
+        image: ghcr.io/ea7klk/overpass-radio-overpass:0.0.25
         imagePullPolicy: IfNotPresent
         env:
         - name: ALLOWED_ORIGINS
-          value: https://potamap.ea7klk.es
-        - name: OVERPASS_DB_DIR
+          value: ""
+        - name: OVERPASS_DB_ROOT
           value: /srv/overpass-radio/db
-        - name: OVERPASS_REBUILD_DB_DIR
-          value: /srv/overpass-radio/db-rebuild
-        - name: OVERPASS_CUTOVER_READY_FILE
-          value: /srv/overpass-radio/cutover-ready
+        - name: OVERPASS_LIVE_DB_DIR
+          value: /srv/overpass-radio/db/live
+        - name: OVERPASS_STAGING_DB_DIR
+          value: /srv/overpass-radio/db/staging
+        - name: OVERPASS_STATE_DIR
+          value: /srv/overpass-radio/state
+        - name: OVERPASS_STAGING_READY_FILE
+          value: /srv/overpass-radio/state/staging-ready
+        - name: OVERPASS_CUTOVER_REQUESTED_FILE
+          value: /srv/overpass-radio/state/cutover-requested
         - name: OVERPASS_CUTOVER_COMPLETE_FILE
-          value: /srv/overpass-radio/cutover-complete
-        - name: OVERPASS_MAINTENANCE_LOCK
-          value: /srv/overpass-radio/.maintenance.lock
-        - name: OVERPASS_MAINTENANCE_LOCK_STALE_SECONDS
-          value: "21600"
+          value: /srv/overpass-radio/state/cutover-complete
         ports:
         - name: http
           containerPort: 80
@@ -68,10 +70,10 @@ spec:
               http://127.0.0.1/api/interpreter
               --data-urlencode 'data=[out:json];node(1);out;' |
               grep -q '"version"'
-          initialDelaySeconds: 60
+          initialDelaySeconds: 120
           periodSeconds: 30
           timeoutSeconds: 10
-          failureThreshold: 6
+          failureThreshold: 12
         startupProbe:
           exec:
             command:
@@ -84,22 +86,27 @@ spec:
               grep -q '"version"'
           periodSeconds: 10
           timeoutSeconds: 10
-          failureThreshold: 360
+          failureThreshold: 8640
         resources:
           requests:
             cpu: 100m
             memory: 512Mi
         volumeMounts:
-        - name: data
-          mountPath: /srv/overpass-radio
+        - name: databases
+          mountPath: /srv/overpass-radio/db
+        - name: state
+          mountPath: /srv/overpass-radio/state
         - name: apache-cors
           mountPath: /etc/apache2/conf-enabled/zz-overpass-radio-cors.conf
           subPath: zz-overpass-radio-cors.conf
           readOnly: true
       volumes:
-      - name: data
+      - name: databases
         persistentVolumeClaim:
-          claimName: overpass-radio-data
+          claimName: overpass-radio-databases
+      - name: state
+        persistentVolumeClaim:
+          claimName: overpass-radio-state
       - name: apache-cors
         configMap:
           name: overpass-radio-apache-cors
@@ -130,76 +137,80 @@ spec:
       nodeSelector:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
-      - name: initialize-replacement-db-from-pbf
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.22
+      - name: download-fresh-planet
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.25
         imagePullPolicy: IfNotPresent
-        command:
-        - /usr/local/bin/radio-overpass-initial-import
+        command: [/usr/local/bin/radio-overpass-planet-bootstrap]
+        volumeMounts:
+        - name: planet
+          mountPath: /srv/planet
+      - name: initialize-filtered-staging
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.25
+        imagePullPolicy: IfNotPresent
+        command: [/usr/local/bin/radio-overpass-initial-staging]
         env:
-        - name: INITIAL_PBF_PATH
-          value: /initial/planet-260907.osm.pbf
-        - name: OVERPASS_DB_DIR
-          value: /srv/overpass-radio/db-rebuild
-        - name: OVERPASS_WORK_DIR
-          value: /srv/overpass-radio/rebuild-work
-        - name: CATALOG_FILE
-          value: /srv/overpass-radio/rebuild-catalog.json
-        - name: SNAPSHOT_METADATA_FILE
-          value: /srv/overpass-radio/rebuild-snapshot.json
+        - name: PLANET_PBF
+          value: /srv/planet/planet-latest.osm.pbf
+        - name: FILTERED_DIR
+          value: /srv/filtered
+        - name: STAGING_DB_DIR
+          value: /srv/db/staging
+        - name: STATE_DIR
+          value: /srv/state
         - name: TAG_KEY_PREFIX
           value: communication:amateur_radio
-        - name: INITIAL_REPLICATE_ID
-          value: "5108"
         volumeMounts:
-        - name: data
-          mountPath: /srv/overpass-radio
-        - name: initial-pbf
-          mountPath: /initial/planet-260907.osm.pbf
-          readOnly: true
+        - name: planet
+          mountPath: /srv/planet
+        - name: filtered
+          mountPath: /srv/filtered
+        - name: databases
+          mountPath: /srv/db
+        - name: state
+          mountPath: /srv/state
       containers:
-      - name: rebuild-pipeline
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.22
+      - name: full-pbf-replication
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.25
         imagePullPolicy: IfNotPresent
-        command:
-        - /usr/local/bin/radio-overpass-rebuild-entrypoint
+        command: [/usr/local/bin/radio-overpass-full-pbf-entrypoint]
         env:
         - name: CONFIG_PATH
           value: /etc/overpass-radio.json
-        - name: REBUILD_DB_DIR
-          value: /srv/overpass-radio/db-rebuild
-        - name: LIVE_DB_DIR
-          value: /srv/overpass-radio/db
-        - name: OFFICIAL_REPLICA_DIR
-          value: /srv/overpass-radio/rebuild-replica
-        - name: CUTOVER_REQUESTED_FILE
-          value: /srv/overpass-radio/cutover-requested
-        - name: CUTOVER_READY_FILE
-          value: /srv/overpass-radio/cutover-ready
-        - name: CUTOVER_COMPLETE_FILE
-          value: /srv/overpass-radio/cutover-complete
-        - name: PHASE_RESET_REQUESTED_FILE
-          value: /srv/overpass-radio/phase-reset-requested
-        - name: PHASE_RESET_COMPLETE_FILE
-          value: /srv/overpass-radio/phase-reset-complete
         resources:
           requests:
             cpu: 1
             memory: 2Gi
         volumeMounts:
-        - name: data
-          mountPath: /srv/overpass-radio
+        - name: planet
+          mountPath: /srv/overpass-radio/planet
+        - name: raw-changes
+          mountPath: /srv/overpass-radio/raw
+        - name: filtered
+          mountPath: /srv/overpass-radio/filtered
+        - name: databases
+          mountPath: /srv/overpass-radio/db
+        - name: state
+          mountPath: /srv/overpass-radio/state
         - name: config
           mountPath: /etc/overpass-radio.json
           subPath: overpass-radio.json
           readOnly: true
       volumes:
-      - name: data
+      - name: planet
         persistentVolumeClaim:
-          claimName: overpass-radio-data
-      - name: initial-pbf
-        hostPath:
-          path: /root/planet-260907.osm.pbf
-          type: File
+          claimName: overpass-radio-planet
+      - name: raw-changes
+        persistentVolumeClaim:
+          claimName: overpass-radio-raw-changes
+      - name: filtered
+        persistentVolumeClaim:
+          claimName: overpass-radio-filtered
+      - name: databases
+        persistentVolumeClaim:
+          claimName: overpass-radio-databases
+      - name: state
+        persistentVolumeClaim:
+          claimName: overpass-radio-state
       - name: config
         configMap:
           name: overpass-radio-config

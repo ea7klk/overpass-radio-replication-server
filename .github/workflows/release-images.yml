@@ -47,7 +47,7 @@ jobs:
       - name: Compile Python modules
         run: python -m compileall -q radio_overpass
       - name: Validate shell entrypoints
-        run: bash -n docker/overpass/entrypoint.sh docker/replicator/entrypoint.sh docker/replicator/initial-import.sh docker/replicator/apply-minute.sh docker/replicator/rebuild-entrypoint.sh
+        run: bash -n docker/overpass/entrypoint.sh docker/replicator/entrypoint.sh docker/replicator/initial-import.sh docker/replicator/apply-minute.sh docker/replicator/rebuild-entrypoint.sh docker/replicator/planet-bootstrap.sh docker/replicator/initial-staging.sh docker/replicator/full-pbf-entrypoint.sh
       - name: Validate Compose definition
         run: docker compose config --quiet
 

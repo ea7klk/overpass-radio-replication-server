@@ -54,7 +54,7 @@ COPY docker/overpass/entrypoint.sh /usr/local/bin/overpass-radio-entrypoint
 RUN chmod 755 /usr/local/bin/overpass-radio-entrypoint \
     && a2enconf overpass-radio
 
-ENV OVERPASS_DB_DIR=/srv/overpass-radio/db \
+ENV OVERPASS_DB_DIR=/srv/overpass-radio/db/live \
     ALLOWED_ORIGINS=
 EXPOSE 80
 VOLUME ["/srv/overpass-radio"]
@@ -68,7 +68,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ca-certificates curl gzip grep \
-       libbz2-1.0 libexpat1 liblz4-1 liblzma5 zlib1g osmium-tool \
+       aria2 libbz2-1.0 libexpat1 liblz4-1 liblzma5 zlib1g osmium-tool \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=overpass-builder /opt/overpass /opt/overpass
@@ -83,10 +83,16 @@ COPY docker/replicator/entrypoint.sh /usr/local/bin/radio-overpass-entrypoint
 COPY docker/replicator/initial-import.sh /usr/local/bin/radio-overpass-initial-import
 COPY docker/replicator/apply-minute.sh /usr/local/bin/radio-overpass-apply-minute
 COPY docker/replicator/rebuild-entrypoint.sh /usr/local/bin/radio-overpass-rebuild-entrypoint
+COPY docker/replicator/planet-bootstrap.sh /usr/local/bin/radio-overpass-planet-bootstrap
+COPY docker/replicator/initial-staging.sh /usr/local/bin/radio-overpass-initial-staging
+COPY docker/replicator/full-pbf-entrypoint.sh /usr/local/bin/radio-overpass-full-pbf-entrypoint
 RUN chmod 755 /usr/local/bin/radio-overpass-entrypoint \
     && chmod 755 /usr/local/bin/radio-overpass-initial-import \
     && chmod 755 /usr/local/bin/radio-overpass-apply-minute \
-    && chmod 755 /usr/local/bin/radio-overpass-rebuild-entrypoint
+    && chmod 755 /usr/local/bin/radio-overpass-rebuild-entrypoint \
+    && chmod 755 /usr/local/bin/radio-overpass-planet-bootstrap \
+    && chmod 755 /usr/local/bin/radio-overpass-initial-staging \
+    && chmod 755 /usr/local/bin/radio-overpass-full-pbf-entrypoint
 
 ENV CONFIG_PATH=/etc/overpass-radio.json
 VOLUME ["/srv/overpass-radio"]

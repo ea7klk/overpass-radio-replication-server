@@ -945,6 +945,40 @@ def apply_with_official_helper(
         time.sleep(2)
 
 
+def import_xml_with_progress(
+    command: list[str],
+    xml_path: Path,
+    every: int = 5000,
+) -> None:
+    """Stream an XML import while reporting object counts to the pod log."""
+    every = max(1, every)
+    process = subprocess.Popen(command, stdin=subprocess.PIPE)
+    count = 0
+    next_report = every
+    overlap = b""
+    object_pattern = re.compile(rb"<(?:node|way|relation)\b")
+    try:
+        assert process.stdin is not None
+        with xml_path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                data = overlap + chunk
+                count += len(object_pattern.findall(data))
+                overlap = data[-32:]
+                process.stdin.write(chunk)
+                while count >= next_report:
+                    LOG.info("Overpass DB import processed at least %d OSM objects", next_report)
+                    next_report += every
+        process.stdin.close()
+        returncode = process.wait()
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    if returncode:
+        raise subprocess.CalledProcessError(returncode, command)
+    LOG.info("Overpass DB import processed %d OSM objects", count)
+
+
 def _update_database(
     config: dict[str, Any],
     osc_path: Path,
@@ -979,14 +1013,22 @@ def _update_database(
             ),
         )
         try:
-            with osc_path.open("rb") as source:
-                result = subprocess.run(
+            if config.get("log_import_progress"):
+                import_xml_with_progress(
                     command,
-                    stdin=source,
-                    check=True,
-                    stderr=subprocess.PIPE,
-                    text=True,
+                    osc_path,
+                    int(config.get("import_progress_every", 5000)),
                 )
+                result = None
+            else:
+                with osc_path.open("rb") as source:
+                    result = subprocess.run(
+                        command,
+                        stdin=source,
+                        check=True,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
         except subprocess.CalledProcessError as exc:
             diagnostics = overpass_update_diagnostics(exc.stderr)
             LOG.error(
@@ -997,7 +1039,8 @@ def _update_database(
                 ),
             )
             raise
-        log_overpass_update_diagnostics(result.stderr)
+        if result is not None:
+            log_overpass_update_diagnostics(result.stderr)
         return
 
     command = [

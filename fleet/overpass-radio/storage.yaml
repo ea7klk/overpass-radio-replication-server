@@ -1,13 +1,84 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: overpass-radio-data
+  name: overpass-radio-planet
   namespace: overpass-radio
+  labels:
+    app.kubernetes.io/component: full-planet-pbf
+  annotations:
+    overpass.spainip.es/purpose: full-planet-pbf-and-torrent
 spec:
-  accessModes:
-  - ReadWriteOnce
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 220Gi
+  storageClassName: local-path
+  volumeMode: Filesystem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: overpass-radio-raw-changes
+  namespace: overpass-radio
+  labels:
+    app.kubernetes.io/component: raw-replication
+  annotations:
+    overpass.spainip.es/purpose: raw-global-osc-replication-files
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: local-path
+  volumeMode: Filesystem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: overpass-radio-filtered
+  namespace: overpass-radio
+  labels:
+    app.kubernetes.io/component: filtered-extracts
+  annotations:
+    overpass.spainip.es/purpose: filtered-radio-pbf-extracts
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 25Gi
+  storageClassName: local-path
+  volumeMode: Filesystem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: overpass-radio-databases
+  namespace: overpass-radio
+  labels:
+    app.kubernetes.io/component: overpass-databases
+  annotations:
+    overpass.spainip.es/purpose: live-and-staging-filtered-overpass-databases
+spec:
+  accessModes: [ReadWriteOnce]
   resources:
     requests:
       storage: 100Gi
+  storageClassName: local-path
+  volumeMode: Filesystem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: overpass-radio-state
+  namespace: overpass-radio
+  labels:
+    app.kubernetes.io/component: pipeline-state
+  annotations:
+    overpass.spainip.es/purpose: checkpoints-and-cutover-coordination
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
   storageClassName: local-path
   volumeMode: Filesystem
