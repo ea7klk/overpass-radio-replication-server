@@ -373,6 +373,54 @@ class QuickCheckTest(unittest.TestCase):
         self.assertIn("(._;<<;);", query)
         self.assertIn(b"<way id=\"9\"", remote_xml)
 
+    def test_public_overpass_query_rotates_configured_endpoints_on_retry(self):
+        class Response(BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+        endpoints = [
+            "https://overpass.private.coffee/api/interpreter",
+            "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+            "https://overpass-api.de/api/interpreter",
+        ]
+        responses = [
+            OSError("private endpoint unavailable"),
+            OSError("mail endpoint unavailable"),
+            Response(b'<osm version="0.6"><node id="1" lat="40" lon="-3"/></osm>'),
+        ]
+        config = {
+            "overpass_query_urls": endpoints,
+            "overpass_query_timeout": 30,
+            "overpass_query_retries": 2,
+            "retry_initial_seconds": 0,
+            "retry_max_seconds": 1,
+            "tag_key_prefix": "communication:amateur_radio",
+        }
+        with (
+            patch("radio_overpass.replicator.QUERY_ENDPOINT_NEXT", 0),
+            patch(
+                "radio_overpass.replicator.urllib.request.urlopen",
+                side_effect=responses,
+            ) as urlopen,
+        ):
+            with tempfile.TemporaryDirectory() as directory:
+                query_overpass(
+                    config,
+                    "node:1",
+                    set(),
+                    Path(directory) / "remote.osc",
+                )
+
+        self.assertEqual(
+            [call.args[0].full_url for call in urlopen.call_args_list],
+            endpoints,
+        )
+
     def test_missing_geometry_diagnostics_are_summarized(self):
         diagnostics = """compute_geometry: Node 1756187290 used in way 405816383 not found.
 compute_geometry: Way 1206978494 used in relation 6791194 not found.

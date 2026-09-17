@@ -14,7 +14,11 @@
   "poll_seconds": 60,
   "retry_initial_seconds": 15,
   "retry_max_seconds": 900,
-  "overpass_query_url": "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+  "overpass_query_urls": [
+    "https://overpass.private.coffee/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass-api.de/api/interpreter"
+  ],
   "overpass_query_timeout": 180,
   "overpass_query_retries": 3,
   "dependency_query_batch_size": 20,

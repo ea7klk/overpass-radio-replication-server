@@ -38,6 +38,8 @@ ANSI_RESET = "\033[0m"
 OBJECT_TYPES = {"node", "way", "relation"}
 ROOT_KEY = re.compile(r"^(node|way|relation):([1-9][0-9]*)$")
 MAINTENANCE_STATE = threading.local()
+QUERY_ENDPOINT_LOCK = threading.Lock()
+QUERY_ENDPOINT_NEXT = 0
 
 
 class OverpassRootNotFoundError(RuntimeError):
@@ -389,10 +391,28 @@ def query_overpass(
     known_keys: set[str],
     output_path: Path,
 ) -> RemoteRefresh:
-    endpoint = config.get(
-        "overpass_query_url",
-        "https://overpass.private.coffee/api/interpreter",
-    )
+    configured_endpoints = config.get("overpass_query_urls")
+    if isinstance(configured_endpoints, list):
+        endpoints = tuple(
+            str(endpoint).rstrip("/")
+            for endpoint in configured_endpoints
+            if str(endpoint).strip()
+        )
+    else:
+        endpoints = ()
+    if not endpoints:
+        endpoints = (
+            str(
+                config.get(
+                    "overpass_query_url",
+                    "https://overpass.private.coffee/api/interpreter",
+                )
+            ).rstrip("/"),
+        )
+    global QUERY_ENDPOINT_NEXT
+    with QUERY_ENDPOINT_LOCK:
+        start_endpoint = QUERY_ENDPOINT_NEXT % len(endpoints)
+        QUERY_ENDPOINT_NEXT += 1
     timeout = int(config.get("overpass_query_timeout", 180))
     retries = int(config.get("overpass_query_retries", 3))
     retry_wait = int(config["retry_initial_seconds"])
@@ -401,6 +421,7 @@ def query_overpass(
     last_error: Exception | None = None
 
     for attempt in range(retries + 1):
+        endpoint = endpoints[(start_endpoint + attempt) % len(endpoints)]
         started = time.monotonic()
         objects: dict[str, bytes] = {}
         refs: dict[str, set[str]] = {}

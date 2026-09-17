@@ -106,11 +106,13 @@ corresponding Planet sequence is different.
 
 `config.example.json` documents the runtime paths and settings. The main
 options are `tag_key_prefix`, `daily_base_url`, `hour_base_url`,
-`minute_base_url`, `overpass_query_url`, `official_replica_dir`, and
+`minute_base_url`, `overpass_query_urls`, `official_replica_dir`, and
 `osc_inspection_dir`. Files are staged and applied one at a time. Newly
 discovered roots are queried with up to four concurrent public queries, then
 successful results from that one source file are applied as that same official
-sequence; there is no cross-file dependency batching.
+sequence; there is no cross-file dependency batching. Query attempts rotate
+through the configured Overpass endpoints, and concurrent queries start at
+different endpoints.
 
 Run the local checks with:
 
