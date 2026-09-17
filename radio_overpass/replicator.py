@@ -880,12 +880,13 @@ def apply_with_official_helper(
             "cadence boundary was not initialized correctly"
         )
 
-    target = replica_dir / sequence_path(sequence)
+    relative = Path(sequence_path(sequence))
+    target = replica_dir / relative.parent
     target.mkdir(parents=True, exist_ok=True)
-    staged = target / f"{sequence % 1000:03d}.osc.gz"
+    staged = target / f"{relative.name}.osc.gz"
     _gzip_copy(osc_path, staged)
     atomic_text(
-        target / f"{sequence % 1000:03d}.state.txt",
+        target / f"{relative.name}.state.txt",
         f"sequenceNumber={sequence}\ntimestamp={timestamp}\n",
     )
     atomic_text(replica_dir / "replicate_id", str(sequence) + "\n")
