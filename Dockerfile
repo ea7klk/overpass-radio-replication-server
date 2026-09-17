@@ -46,6 +46,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ca-certificates curl gzip grep \
        aria2 libbz2-1.0 libexpat1 liblz4-1 liblzma5 zlib1g osmium-tool \
+    && aria2c --version \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=overpass-prebuilt /app /opt/overpass

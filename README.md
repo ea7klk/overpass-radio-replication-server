@@ -13,6 +13,8 @@ The Fleet deployment uses two cooperating Deployments: the public Overpass
 API/dispatcher and one `full-pbf-replication` worker. The worker uses a fresh
 `planet-latest.osm.pbf.torrent`, resumes the PBF download with `aria2c`, and
 keeps that full PBF as its source of truth.
+The replicator image installs the Debian `aria2` package and verifies that
+`aria2c` is available during the image build.
 
 The worker processes replication in order: daily, hourly, then minutely. Each
 raw `.osc.gz` file is first scanned for a
