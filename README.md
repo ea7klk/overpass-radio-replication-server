@@ -23,6 +23,10 @@ successful dependency/dependent results are applied in that same official
 sequence. Query failures leave the phase checkpoint unchanged and retry
 indefinitely.
 
+After the PBF import, the same public Overpass closure query is run for every
+initial radio root so reverse dependents that cannot be recovered by a
+forward-only PBF filter are included before the daily phase begins.
+
 The filter preserves dependencies already present in the snapshot and also
 replays a source diff when a new root references another object from earlier
 in that same diff. Empty OSC files are deliberately published for discarded
