@@ -16,9 +16,25 @@ test -s "$planet_pbf"
 mkdir -p "$filtered_dir" "$state_dir"
 existing_active=$(tr -d '[:space:]' < "$active_slot_file" 2>/dev/null || true)
 if [[ "$existing_active" == blue || "$existing_active" == green ]] &&
-    [[ -f "/srv/db/$existing_active/nodes.map" ]]; then
+    [[ -f "/srv/db/$existing_active/nodes.map" &&
+       -f "/srv/db/$existing_active/nodes.bin" ]]; then
     echo "Existing active filtered database is present in slot $existing_active; skipping initial staging"
     printf 'initial filtered staging database already present in slot %s\n' "$existing_active" > "$initial_complete_file"
+    exit 0
+fi
+valid_slots=()
+for candidate in blue green; do
+    if [[ -f "/srv/db/$candidate/nodes.map" && -f "/srv/db/$candidate/nodes.bin" ]]; then
+        valid_slots+=("$candidate")
+    fi
+done
+if (( ${#valid_slots[@]} > 0 )); then
+    if [[ -z "$existing_active" && ${#valid_slots[@]} -eq 1 ]]; then
+        printf '%s\n' "${valid_slots[0]}" > "$active_slot_file"
+        existing_active="${valid_slots[0]}"
+    fi
+    echo "Existing filtered database is present in slot ${existing_active:-${valid_slots[*]}}; skipping initial staging"
+    printf 'initial filtered staging database already present in slot %s\n' "${existing_active:-${valid_slots[0]}}" > "$initial_complete_file"
     exit 0
 fi
 if [[ -f "$initial_complete_file" && -f "$staging_db/nodes.map" ]]; then
