@@ -131,7 +131,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
       - name: initialize-replacement-db-from-pbf
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.24
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.22
         imagePullPolicy: IfNotPresent
         command:
         - /usr/local/bin/radio-overpass-initial-import
@@ -158,7 +158,7 @@ spec:
           readOnly: true
       containers:
       - name: rebuild-pipeline
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.24
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.22
         imagePullPolicy: IfNotPresent
         command:
         - /usr/local/bin/radio-overpass-rebuild-entrypoint
