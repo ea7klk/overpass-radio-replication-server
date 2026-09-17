@@ -24,7 +24,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       containers:
       - name: overpass
-        image: ghcr.io/ea7klk/overpass-radio-overpass:0.0.8
+        image: ghcr.io/ea7klk/overpass-radio-overpass:0.0.9
         imagePullPolicy: IfNotPresent
         env:
         - name: ALLOWED_ORIGINS
@@ -131,7 +131,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
       - name: initialize-replacement-db-from-pbf
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.19
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.20
         imagePullPolicy: IfNotPresent
         command:
         - /usr/local/bin/radio-overpass-initial-import
@@ -149,7 +149,7 @@ spec:
         - name: TAG_KEY_PREFIX
           value: communication:amateur_radio
         - name: INITIAL_REPLICATE_ID
-          value: "5108"
+          value: "5107"
         volumeMounts:
         - name: data
           mountPath: /srv/overpass-radio
@@ -158,7 +158,7 @@ spec:
           readOnly: true
       containers:
       - name: rebuild-pipeline
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.19
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.0.20
         imagePullPolicy: IfNotPresent
         command:
         - /usr/local/bin/radio-overpass-rebuild-entrypoint
