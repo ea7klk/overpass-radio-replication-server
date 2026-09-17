@@ -17,6 +17,7 @@ data:
       "writer_lock": "/srv/overpass-radio/.database-writer.lock",
       "minute_base_url": "https://planet.openstreetmap.org/replication/minute/",
       "minute_prefetch_window": 20,
+      "minute_max_staged_ahead": 200,
       "poll_seconds": 60,
       "retry_initial_seconds": 15,
       "retry_max_seconds": 900,

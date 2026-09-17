@@ -286,21 +286,6 @@ def commit_applied_state(
     LOG.info("committed filtered membership through minute/%s", sequence)
 
 
-def wait_for_applier(db_dir: Path, published: int, poll_seconds: int) -> int:
-    marker = db_dir / "replicate_id"
-    last_logged: int | None = None
-    while True:
-        current = read_sequence(marker)
-        if current is None:
-            raise RuntimeError(f"database replicate_id disappeared: {marker}")
-        if current >= published:
-            return current
-        if current != last_logged:
-            LOG.info("official applier at %s; waiting for published batch through %s", current, published)
-            last_logged = current
-        time.sleep(max(1, poll_seconds))
-
-
 def next_batch_end(db_sequence: int, upstream_sequence: int, prefetch_window: int) -> int:
     """Stage up to the preload window while catching up, then one file at a time."""
     if upstream_sequence <= db_sequence:
@@ -308,6 +293,54 @@ def next_batch_end(db_sequence: int, upstream_sequence: int, prefetch_window: in
     distance = upstream_sequence - db_sequence
     window = prefetch_window if distance > prefetch_window else 1
     return min(upstream_sequence, db_sequence + window)
+
+
+def prepare_working_membership(
+    config: dict[str, Any],
+    work_dir: Path,
+    published: int,
+    db_sequence: int,
+) -> Path:
+    """Recover the filter state through the published, possibly unapplied, cursor."""
+    working = work_dir / "working-membership.json"
+    working_cursor = work_dir / "working-membership-replicate-id"
+    if working.exists() and read_sequence(working_cursor) == published:
+        return working
+
+    membership = Path(config["catalog_file"])
+    state = common.load_json(membership, {})
+    if not isinstance(state, dict):
+        raise ValueError(f"catalog must contain a JSON object: {membership}")
+
+    membership_cursor = Path(
+        config.get("membership_cursor_file", str(work_dir / "membership-replicate-id"))
+    )
+    cursor = read_sequence(membership_cursor, db_sequence)
+    if cursor is None:
+        cursor = db_sequence
+    if cursor > published:
+        cursor = published
+
+    for sequence in range(cursor + 1, published + 1):
+        current_delta = delta_path(work_dir, sequence)
+        if not current_delta.exists():
+            raise RuntimeError(
+                f"cannot recover working membership: missing delta for minute/{sequence}"
+            )
+        current_state = common.delta_state(common.delta_items(current_delta))
+        if current_state is not None:
+            state = current_state
+
+    common.atomic_json(working, state)
+    atomic_sequence(working_cursor, published)
+    LOG.info(
+        "prepared working membership through minute/%s (database cursor=%s, "
+        "published cursor=%s)",
+        published,
+        db_sequence,
+        published,
+    )
+    return working
 
 
 def run(config: dict[str, Any]) -> None:
@@ -329,19 +362,28 @@ def run(config: dict[str, Any]) -> None:
             )
         ),
     )
+    max_staged_ahead = max(
+        prefetch_window,
+        int(config.get("minute_max_staged_ahead", prefetch_window * 10)),
+    )
     work_dir.mkdir(parents=True, exist_ok=True)
     replica_dir.mkdir(parents=True, exist_ok=True)
     common.osc_inspection_directory(config, work_dir).mkdir(parents=True, exist_ok=True)
+    working_membership = work_dir / "working-membership.json"
+    last_pipeline_report: tuple[int, int] | None = None
 
     LOG.info(
         "minute filter started with pre-filtering enabled for tag prefix %r; "
-        "staging window=%s files while behind, then one file at a time",
+        "staging window=%s files while behind, then one file at a time; "
+        "maximum staged lead=%s files",
         config["tag_key_prefix"],
         prefetch_window,
+        max_staged_ahead,
     )
 
     while True:
         has_batch = False
+        capacity_limited = False
         with writer_lock(lock_path):
             db_sequence = read_sequence(db_dir / "replicate_id")
             if db_sequence is None:
@@ -350,65 +392,85 @@ def run(config: dict[str, Any]) -> None:
             if published is None:
                 published = db_sequence
 
-            if published > db_sequence:
-                pass
-            else:
-                if not membership_cursor.exists():
-                    atomic_sequence(membership_cursor, db_sequence)
-                if published < db_sequence:
-                    atomic_sequence(replica_dir / "replicate_id", db_sequence)
-                    published = db_sequence
-                if published == db_sequence:
-                    current = common.latest(
-                        config["minute_base_url"],
-                        int(config["retry_initial_seconds"]),
-                        int(config["retry_max_seconds"]),
-                    )
-                    first = db_sequence + 1
-                    last = next_batch_end(
-                        db_sequence,
-                        int(current["sequence"]),
-                        prefetch_window,
-                    )
-                    if first <= last:
-                        working_membership = work_dir / "working-membership.json"
-                        initial_state = common.load_json(Path(config["catalog_file"]), {})
-                        if not isinstance(initial_state, dict):
-                            raise ValueError("catalog must contain a JSON object")
-                        common.atomic_json(working_membership, initial_state)
-                        LOG.info(
-                            "filtering minute updates %s..%s into one official-applier batch",
-                            first,
-                            last,
-                        )
-                        staged_last = db_sequence
-                        for sequence in range(first, last + 1):
-                            result = stage_change(
-                                config,
-                                sequence,
-                                working_membership,
-                                replica_dir,
-                                work_dir,
-                            )
-                            staged_last = int(result["sequence"])
-                        atomic_sequence(replica_dir / "replicate_id", staged_last)
-                        working_membership.unlink(missing_ok=True)
-                        published = staged_last
-                        has_batch = True
-                        LOG.info(
-                            "published filtered replica batch through %s; apply_osc_to_db.sh will consume it",
-                            staged_last,
-                        )
-
-        if published > db_sequence:
-            LOG.info(
-                "replica batch %s is still applying; database cursor is %s",
+            if not membership_cursor.exists():
+                atomic_sequence(membership_cursor, db_sequence)
+            if published < db_sequence:
+                atomic_sequence(replica_dir / "replicate_id", db_sequence)
+                published = db_sequence
+            commit_applied_state(config, db_sequence, work_dir, queue_dir)
+            working_membership = prepare_working_membership(
+                config,
+                work_dir,
                 published,
                 db_sequence,
             )
-            reached = wait_for_applier(db_dir, published, poll)
-            with writer_lock(lock_path):
-                commit_applied_state(config, reached, work_dir, queue_dir)
+            current = common.latest(
+                config["minute_base_url"],
+                int(config["retry_initial_seconds"]),
+                int(config["retry_max_seconds"]),
+            )
+            first = published + 1
+            last = next_batch_end(
+                published,
+                int(current["sequence"]),
+                prefetch_window,
+            )
+            stage_capacity = max_staged_ahead - (published - db_sequence)
+            if stage_capacity > 0:
+                last = min(last, published + stage_capacity)
+            else:
+                last = published
+                capacity_limited = int(current["sequence"]) > published
+            if first <= last:
+                LOG.info(
+                    "filtering minute updates %s..%s while official applier runs "
+                    "at database cursor %s",
+                    first,
+                    last,
+                    db_sequence,
+                )
+                staged_last = published
+                for sequence in range(first, last + 1):
+                    result = stage_change(
+                        config,
+                        sequence,
+                        working_membership,
+                        replica_dir,
+                        work_dir,
+                    )
+                    staged_last = int(result["sequence"])
+                atomic_sequence(replica_dir / "replicate_id", staged_last)
+                atomic_sequence(
+                    work_dir / "working-membership-replicate-id", staged_last
+                )
+                published = staged_last
+                has_batch = True
+                LOG.info(
+                    "published filtered replica batch through %s; "
+                    "apply_osc_to_db.sh will consume it while pre-filtering continues",
+                    staged_last,
+                )
+
+        if published > db_sequence:
+            report = (db_sequence, published)
+            if report != last_pipeline_report:
+                LOG.info(
+                    "official applier is consuming through published cursor %s; "
+                    "pre-filtering remains active (database cursor=%s)",
+                    published,
+                    db_sequence,
+                )
+                last_pipeline_report = report
+            if not has_batch:
+                if capacity_limited:
+                    LOG.info(
+                        "pre-filtering is waiting only because the official applier "
+                        "has %s staged files ahead (limit=%s); it will resume as soon "
+                        "as the applier advances",
+                        published - db_sequence,
+                        max_staged_ahead,
+                    )
+                time.sleep(poll)
             continue
 
         if not has_batch:

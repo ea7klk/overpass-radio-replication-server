@@ -107,11 +107,14 @@ corresponding Planet sequence is different.
 ## Configuration and validation
 
 `config.example.json` documents the runtime paths and settings. The main
-options are `minute_prefetch_window`, `tag_key_prefix`, `minute_base_url`,
-`overpass_query_url`, and `osc_inspection_dir`. Minute updates are staged in
-preload windows (20 by default) while the database is behind. Once the worker
-is within that window of the upstream tip, it stages one file at a time. The
-official helper applies the staged standard replication files continuously.
+options are `minute_prefetch_window`, `minute_max_staged_ahead`,
+`tag_key_prefix`, `minute_base_url`, `overpass_query_url`, and
+`osc_inspection_dir`. Minute updates are staged in preload windows (20 by
+default) while the database is behind. The filterer continues producing later
+batches while the official applier consumes earlier ones, up to the bounded
+200-file staged lead. Once the worker is within the preload window of the
+upstream tip, it stages one file at a time. The official helper applies the
+staged standard replication files continuously.
 Newly discovered roots are queried in batches of 20
 with up to four concurrent public queries; the resulting OSC objects are
 combined into one serialized database update per batch.

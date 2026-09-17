@@ -53,6 +53,51 @@ class MinuteWorkerTest(unittest.TestCase):
             Path("/mirror/007/275/790.osc.gz"),
         )
 
+    def test_prepare_working_membership_replays_published_pending_deltas(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work = root / "work"
+            work.mkdir()
+            catalog = root / "catalog.json"
+            catalog.write_text(
+                json.dumps({"roots": ["node:1"], "dependencies": [], "refs": {}}),
+                encoding="utf-8",
+            )
+            cursor = work / "membership-replicate-id"
+            cursor.write_text("10\n", encoding="ascii")
+            pending = minute_worker.delta_path(work, 11)
+            pending.parent.mkdir(parents=True, exist_ok=True)
+            pending.write_text(
+                json.dumps(
+                    {
+                        "op": "state",
+                        "state": {
+                            "roots": ["node:1", "way:2"],
+                            "dependencies": ["node:3"],
+                            "refs": {"way:2": ["node:3"]},
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            working = minute_worker.prepare_working_membership(
+                {"catalog_file": str(catalog), "membership_cursor_file": str(cursor)},
+                work,
+                11,
+                10,
+            )
+
+            self.assertEqual(
+                json.loads(working.read_text(encoding="utf-8"))["roots"],
+                ["node:1", "way:2"],
+            )
+            self.assertEqual(
+                (work / "working-membership-replicate-id").read_text(encoding="ascii"),
+                "11\n",
+            )
+
     def test_staged_empty_diff_is_a_valid_gzip_osc_and_state_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
