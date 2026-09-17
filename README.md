@@ -35,7 +35,10 @@ Up to ten contiguous files are prefetched concurrently. The worker waits for
 the one-hour batch window to be due, then merges and applies the batch in one
 full-PBF rewrite, even if the backlog is still growing. Every file is still
 applied to the full Planet PBF so the source of truth stays complete. For
-accepted files, `osmium tags-filter` creates a new filtered PBF;
+hourly batches, the next minute window is downloaded and tag-prefiltered while
+the hourly apply gate is waiting; those minute files remain queued and are
+applied only after the hourly cursor advances. For accepted files, `osmium
+tags-filter` creates a new filtered PBF;
 that PBF is extracted to XML and imported into an isolated staging Overpass
 database. No external Overpass query is needed: the full Planet PBF is the
 source of truth, and `osmium tags-filter` retains the referenced nodes, ways,

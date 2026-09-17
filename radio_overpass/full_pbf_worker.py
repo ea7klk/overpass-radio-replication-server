@@ -765,26 +765,18 @@ def apply_batch(
     return batch[-1][1]
 
 
-def download_until_caught_up(
+def prefetch_replication_window(
     config: dict[str, Any], cadence: str, first: int, retry: int, maximum: int,
-    due_at: float,
-) -> list[tuple[Path, dict[str, Any], bool]]:
-    """Prefetch one batch and wait for the hourly apply gate if necessary.
-
-    The full Planet PBF is intentionally advanced in bounded batches. While
-    an apply is cooling down, the next ten files can already be downloaded and
-    prefiltered, but no second full-PBF rewrite is started.
-    """
-    sequence = first
+) -> tuple[list[tuple[Path, dict[str, Any], bool]], int]:
     target = int(common.latest(cadence_base(config, cadence), retry, maximum)["sequence"])
-    if sequence > target:
-        return []
+    if first > target:
+        return [], target
     prefetch = max(1, int(config.get("prefetch_files", 10)))
-    window_end = min(sequence + prefetch - 1, target)
-    window = list(range(sequence, window_end + 1))
+    window_end = min(first + prefetch - 1, target)
+    window = list(range(first, window_end + 1))
     LOG.info(
         "prefetching %s %s update files (%s through %s)",
-        len(window), cadence, sequence, window_end,
+        len(window), cadence, first, window_end,
     )
     with ThreadPoolExecutor(
         max_workers=len(window), thread_name_prefix="download"
@@ -796,10 +788,55 @@ def download_until_caught_up(
         (change, state, prefilter(config, cadence, value, change))
         for value, (change, state) in zip(window, downloaded)
     ]
+    return batch, target
+
+
+def prefetch_minute_while_hourly_apply_is_gated(
+    config: dict[str, Any],
+    hourly_batch: list[tuple[Path, dict[str, Any], bool]],
+    retry: int,
+    maximum: int,
+) -> None:
+    if not hourly_batch:
+        return
+    minute_first = first_sequence_after(
+        config, "minute", str(hourly_batch[-1][1]["timestamp"])
+    )
+    minute_batch, minute_target = prefetch_replication_window(
+        config, "minute", minute_first, retry, maximum
+    )
+    if minute_batch:
+        LOG.info(
+            "hourly apply is gated; downloaded and prefiltered minute files "
+            "through %s (upstream target %s) for later ordered application",
+            minute_first + len(minute_batch) - 1,
+            minute_target,
+        )
+
+
+def download_until_caught_up(
+    config: dict[str, Any], cadence: str, first: int, retry: int, maximum: int,
+    due_at: float,
+) -> list[tuple[Path, dict[str, Any], bool]]:
+    """Prefetch one batch and wait for the hourly apply gate if necessary.
+
+    The full Planet PBF is intentionally advanced in bounded batches. While
+    an apply is cooling down, the next cadence's minute files can already be
+    downloaded and prefiltered, but no out-of-order full-PBF rewrite starts.
+    """
+    batch, target = prefetch_replication_window(
+        config, cadence, first, retry, maximum
+    )
+    if not batch:
+        return []
+    if cadence == "hour" and time.time() < due_at:
+        prefetch_minute_while_hourly_apply_is_gated(
+            config, batch, retry, maximum
+        )
     if time.time() < due_at:
         LOG.info(
             "prefetch complete through %s; full-PBF apply is gated until %s",
-            window_end,
+            first + len(batch) - 1,
             time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(due_at)),
         )
     while time.time() < due_at:

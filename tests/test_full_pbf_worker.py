@@ -8,6 +8,7 @@ from radio_overpass.full_pbf_worker import (
     apply_batch,
     import_filtered_pbf,
     new_planet_snapshot,
+    prefetch_minute_while_hourly_apply_is_gated,
     recover_filtered_artifact,
 )
 
@@ -59,6 +60,22 @@ class StagingSlotCoordinationTest(unittest.TestCase):
                 "snapshot_metadata_file": str(snapshot_metadata),
                 "planet_pbf": str(root / "planet-latest.osm.pbf"),
             }))
+
+    def test_prefetches_minutes_while_hourly_apply_is_gated(self):
+        config = {"prefetch_files": 10}
+        hourly_batch = [
+            (Path("hour.osc.gz"), {"timestamp": "2026-09-17T20:00:00Z"}, False)
+        ]
+        with patch(
+            "radio_overpass.full_pbf_worker.first_sequence_after",
+            return_value=7000000,
+        ), patch(
+            "radio_overpass.full_pbf_worker.prefetch_replication_window",
+            return_value=([("minute.osc.gz", {}, True)], 7000000),
+        ) as prefetch:
+            prefetch_minute_while_hourly_apply_is_gated(config, hourly_batch, 1, 9)
+
+        prefetch.assert_called_once_with(config, "minute", 7000000, 1, 9)
 
     def test_apply_batch_skips_full_pbf_when_checkpoint_already_covers_batch(self):
         with tempfile.TemporaryDirectory() as directory:
