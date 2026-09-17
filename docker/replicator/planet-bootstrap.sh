@@ -85,14 +85,6 @@ if [[ -z "$previous_name" && -L "$stable_file" ]]; then
     previous_name=$(basename "$(readlink "$stable_file")")
 fi
 
-if [[ -n "$previous_name" && "$previous_name" != "$payload_name" ]]; then
-    previous_path="$planet_dir/$(basename "$previous_name")"
-    if [[ -f "$previous_path" ]]; then
-        echo "Removing previous Planet PBF before downloading $payload_name: $previous_path"
-        rm -f -- "$previous_path"
-    fi
-fi
-
 echo "Downloading/resuming the fresh Planet PBF with aria2c: $pbf_file"
 download_started=$(date +%s)
 aria2c \
@@ -114,6 +106,13 @@ symlink_tmp="$stable_file.tmp.$$"
 rm -f -- "$symlink_tmp"
 ln -s -- "$payload_name" "$symlink_tmp"
 mv -Tf -- "$symlink_tmp" "$stable_file"
+if [[ -n "$previous_name" && "$previous_name" != "$payload_name" ]]; then
+    previous_path="$planet_dir/$(basename "$previous_name")"
+    if [[ -f "$previous_path" ]]; then
+        echo "Removing previous Planet PBF after switching stable symlink: $previous_path"
+        rm -f -- "$previous_path"
+    fi
+fi
 metadata_tmp="$metadata_file.part"
 fileinfo_tmp="$metadata_file.osmium.part"
 osmium fileinfo --json --no-crc "$pbf_file" > "$fileinfo_tmp"

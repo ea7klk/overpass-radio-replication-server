@@ -20,11 +20,11 @@ The Planet bootstrap records the torrent SHA-256, the original payload
 filename, download size, current payload size, and PBF replication timestamp
 in `planet-download.json`. If the torrent, payload filename, and current
 recorded file size are unchanged, the existing PBF is reused. If a newer
-torrent points to another payload, the previous payload is removed before the
-replacement download starts; the new file is downloaded into the same
-controlled PVC and only then exposed through an atomically refreshed
-`planet-latest.osm.pbf` symlink. After each `osmium apply-changes`, the updated
-payload replaces the previous payload in place and the current size is
+torrent points to another payload, the new file is downloaded into the same
+controlled PVC while the previous payload remains available. Only after the
+new file is complete is the stable `planet-latest.osm.pbf` symlink atomically
+refreshed and the old payload removed. After each `osmium apply-changes`, the
+updated payload replaces the previous payload in place and the current size is
 recorded. This keeps one full Planet payload on disk rather than accumulating
 old versions.
 
