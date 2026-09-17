@@ -796,22 +796,54 @@ def prefetch_minute_while_hourly_apply_is_gated(
     hourly_batch: list[tuple[Path, dict[str, Any], bool]],
     retry: int,
     maximum: int,
+    due_at: float,
 ) -> None:
+    """Keep the minute queue warm while the hourly full-PBF apply is gated.
+
+    Applying a minute file out of order would make the full Planet PBF
+    inconsistent, but downloading and prefiltering it is safe. Polling must
+    therefore continue during the gate instead of waiting after one initial
+    prefetch window. ``next_sequence`` advances only after a complete window
+    has been downloaded and prefiltered, so a restart can safely rediscover
+    any files that were not completed.
+    """
     if not hourly_batch:
         return
     minute_first = first_sequence_after(
         config, "minute", str(hourly_batch[-1][1]["timestamp"])
     )
-    minute_batch, minute_target = prefetch_replication_window(
-        config, "minute", minute_first, retry, maximum
-    )
-    if minute_batch:
+    next_sequence = minute_first
+    poll_seconds = max(1, int(config.get("poll_seconds", 60)))
+    while time.time() < due_at:
         LOG.info(
-            "hourly apply is gated; downloaded and prefiltered minute files "
-            "through %s (upstream target %s) for later ordered application",
-            minute_first + len(minute_batch) - 1,
-            minute_target,
+            "polling minute replication while hourly apply is gated; "
+            "next sequence %s",
+            next_sequence,
         )
+        minute_batch, minute_target = prefetch_replication_window(
+            config, "minute", next_sequence, retry, maximum
+        )
+        if minute_batch:
+            last = next_sequence + len(minute_batch) - 1
+            LOG.info(
+                "hourly apply is gated; downloaded and prefiltered minute files "
+                "through %s (upstream target %s) for later ordered application",
+                last,
+                minute_target,
+            )
+            next_sequence = last + 1
+            continue
+        remaining = due_at - time.time()
+        if remaining <= 0:
+            break
+        LOG.info(
+            "minute replication is caught up through %s (upstream target %s); "
+            "next remote scan in %ss",
+            next_sequence - 1,
+            minute_target,
+            min(poll_seconds, int(remaining)),
+        )
+        time.sleep(min(poll_seconds, max(0.1, remaining)))
 
 
 def download_until_caught_up(
@@ -831,7 +863,7 @@ def download_until_caught_up(
         return []
     if cadence == "hour" and time.time() < due_at:
         prefetch_minute_while_hourly_apply_is_gated(
-            config, batch, retry, maximum
+            config, batch, retry, maximum, due_at
         )
     if time.time() < due_at:
         LOG.info(

@@ -72,10 +72,46 @@ class StagingSlotCoordinationTest(unittest.TestCase):
         ), patch(
             "radio_overpass.full_pbf_worker.prefetch_replication_window",
             return_value=([("minute.osc.gz", {}, True)], 7000000),
-        ) as prefetch:
-            prefetch_minute_while_hourly_apply_is_gated(config, hourly_batch, 1, 9)
+        ) as prefetch, patch(
+            "radio_overpass.full_pbf_worker.time.time",
+            side_effect=[0, 2],
+        ):
+            prefetch_minute_while_hourly_apply_is_gated(
+                config, hourly_batch, 1, 9, 1
+            )
 
         prefetch.assert_called_once_with(config, "minute", 7000000, 1, 9)
+
+    def test_keeps_polling_minute_replication_until_hourly_gate_expires(self):
+        config = {"poll_seconds": 60}
+        hourly_batch = [
+            (Path("hour.osc.gz"), {"timestamp": "2026-09-17T20:00:00Z"}, False)
+        ]
+        with patch(
+            "radio_overpass.full_pbf_worker.first_sequence_after",
+            return_value=7000000,
+        ), patch(
+            "radio_overpass.full_pbf_worker.prefetch_replication_window",
+            side_effect=[
+                ([(Path("minute-1.osc.gz"), {}, True)], 7000000),
+                ([], 7000000),
+            ],
+        ) as prefetch, patch(
+            "radio_overpass.full_pbf_worker.time.time",
+            side_effect=[0, 1, 2, 5],
+        ), patch(
+            "radio_overpass.full_pbf_worker.time.sleep"
+        ) as sleep:
+            prefetch_minute_while_hourly_apply_is_gated(
+                config, hourly_batch, 1, 9, 5
+            )
+
+        self.assertEqual(prefetch.call_count, 2)
+        prefetch.assert_has_calls([
+            unittest.mock.call(config, "minute", 7000000, 1, 9),
+            unittest.mock.call(config, "minute", 7000001, 1, 9),
+        ])
+        sleep.assert_called_once()
 
     def test_apply_batch_skips_full_pbf_when_checkpoint_already_covers_batch(self):
         with tempfile.TemporaryDirectory() as directory:
