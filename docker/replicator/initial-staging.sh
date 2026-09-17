@@ -25,7 +25,7 @@ echo "Initial radio tags-filter completed in $(( $(date +%s) - filter_started ))
 metadata=$(osmium fileinfo --json --no-crc "$planet_pbf")
 python -c 'import json, os, sys; x=json.loads(sys.argv[1]); o=x.get("header",{}).get("option",{}); ts=o.get("osmosis_replication_timestamp"); seq=o.get("osmosis_replication_sequence_number");
 assert ts, "Planet PBF has no replication timestamp";
-json.dump({"source_file":os.path.basename(sys.argv[2]), "timestamp":ts, "replication_sequence":int(seq) if seq is not None else None}, open(sys.argv[3], "w"), indent=2); open(sys.argv[3], "a").write("\\n")' \
+target=open(sys.argv[3], "w", encoding="utf-8"); json.dump({"source_file":os.path.basename(sys.argv[2]), "timestamp":ts, "replication_sequence":int(seq) if seq is not None else None}, target, indent=2); target.write("\n"); target.close()' \
     "$metadata" "$planet_pbf" "$state_dir/snapshot-metadata.json"
 
 temporary_dir=$(mktemp -d "$filtered_dir/initial-xml.XXXXXX")
