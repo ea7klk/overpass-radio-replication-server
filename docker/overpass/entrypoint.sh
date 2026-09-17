@@ -90,7 +90,10 @@ activate_if_ready() {
 retire_if_inactive() {
     active="$(active_slot)"
     [[ -n "$active" && "$active" != "$slot" ]] || return 0
-    [[ "$(tr -d '[:space:]' < "$ready_slot_file" 2>/dev/null)" == "$slot" ]] && return 0
+    if [[ -f "$ready_slot_file" ]] &&
+        [[ "$(tr -d '[:space:]' < "$ready_slot_file")" == "$slot" ]]; then
+        return 0
+    fi
     [[ -f "$db_dir/nodes.map" || -n "$apache_pid" || -n "$dispatcher_pid" ]] || return 0
     stop_apache
     stop_dispatcher

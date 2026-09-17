@@ -26,7 +26,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       containers:
       - name: overpass
-        image: ghcr.io/ea7klk/overpass-radio-overpass:0.1.5
+        image: ghcr.io/ea7klk/overpass-radio-overpass:0.1.6
         imagePullPolicy: IfNotPresent
         env:
         - name: ALLOWED_ORIGINS
