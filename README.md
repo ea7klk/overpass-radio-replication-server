@@ -16,6 +16,17 @@ keeps that full PBF as its source of truth.
 The replicator image installs the Debian `aria2` package and verifies that
 `aria2c` is available during the image build.
 
+The Planet bootstrap records the torrent SHA-256, the original payload
+filename and download size, and the current payload size in
+`planet-download.json`. If the torrent and current recorded file size are
+unchanged, the existing PBF is reused. If a newer torrent points to another
+payload, the previous payload is removed before the replacement download
+starts; the new file is downloaded into the same controlled PVC and then
+exposed through the stable symlink. After each `osmium apply-changes`, the
+updated payload replaces the previous payload in place and the current size
+is recorded. This keeps one full Planet payload on disk rather than
+accumulating old versions.
+
 The worker processes replication in order: daily, hourly, then minutely. Each
 raw `.osc.gz` file is first scanned for a
 `communication:amateur_radio*` tag. Rejected files are logged and deleted.

@@ -107,6 +107,17 @@ def write_marker(config: dict[str, Any], key: str, value: str) -> None:
     temporary.replace(path)
 
 
+def record_current_planet_size(config: dict[str, Any], payload: Path) -> None:
+    metadata_path = config.get("planet_metadata_file")
+    if not metadata_path:
+        return
+    metadata = load_json(Path(str(metadata_path)), {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    metadata["current_size_bytes"] = payload.stat().st_size
+    write_json(Path(str(metadata_path)), metadata)
+
+
 def inactive_slot(config: dict[str, Any]) -> str:
     active = read_marker(config, "active_slot_file")
     if active not in {"blue", "green"}:
@@ -122,6 +133,7 @@ def apply_full_changes(
     config: dict[str, Any], changes: list[Path], cadence: str, first: int, last: int
 ) -> None:
     current = config_path(config, "planet_pbf")
+    payload = current.resolve() if current.is_symlink() else current
     work_dir = config_path(config, "work_dir")
     work_dir.mkdir(parents=True, exist_ok=True)
     merged = work_dir / f"{cadence}-{first:09d}-{last:09d}.osc.gz"
@@ -143,7 +155,7 @@ def apply_full_changes(
         "merged %s %s files in %.1fs: %s",
         len(changes), cadence, time.monotonic() - merge_started, merged,
     )
-    next_pbf = current.with_name(f".planet-{cadence}-{last}.osm.pbf")
+    next_pbf = payload.with_name(f".{payload.name}.{cadence}-{last}.osm.pbf")
     next_pbf.unlink(missing_ok=True)
     started = time.monotonic()
     LOG.info(
@@ -154,7 +166,7 @@ def apply_full_changes(
         [
             "osmium",
             "apply-changes",
-            str(current),
+            str(payload),
             str(merged),
             "-o",
             str(next_pbf),
@@ -163,7 +175,11 @@ def apply_full_changes(
         ],
         check=True,
     )
-    next_pbf.replace(current)
+    # Keep planet-latest.osm.pbf as a stable symlink. Replacing the payload
+    # itself removes the previous version instead of leaving a second full
+    # Planet file beside the updated one.
+    next_pbf.replace(payload)
+    record_current_planet_size(config, payload)
     LOG.info(
         "full Planet PBF advanced through %s/%s in %.1fs",
         cadence, last,

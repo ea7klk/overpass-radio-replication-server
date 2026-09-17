@@ -1,6 +1,7 @@
 {
   "planet_pbf": "/srv/overpass-radio/planet/planet-latest.osm.pbf",
   "planet_torrent": "/srv/overpass-radio/planet/planet-latest.osm.pbf.torrent",
+  "planet_metadata_file": "/srv/overpass-radio/planet/planet-download.json",
   "raw_dir": "/srv/overpass-radio/raw",
   "filtered_dir": "/srv/overpass-radio/filtered",
   "db_root": "/srv/overpass-radio/db",

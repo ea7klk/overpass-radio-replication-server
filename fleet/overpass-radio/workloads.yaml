@@ -137,6 +137,9 @@ spec:
         image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.5
         imagePullPolicy: IfNotPresent
         command: [/usr/local/bin/radio-overpass-planet-bootstrap]
+        env:
+        - name: PLANET_METADATA_FILE
+          value: /srv/planet/planet-download.json
         volumeMounts:
         - name: planet
           mountPath: /srv/planet
