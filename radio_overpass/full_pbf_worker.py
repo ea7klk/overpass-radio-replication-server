@@ -327,38 +327,47 @@ def download_until_caught_up(
     config: dict[str, Any], cadence: str, first: int, retry: int, maximum: int,
     due_at: float,
 ) -> list[tuple[Path, dict[str, Any], bool]]:
-    batch: list[tuple[Path, dict[str, Any], bool]] = []
+    """Prefetch one batch and wait for the hourly apply gate if necessary.
+
+    The full Planet PBF is intentionally advanced in bounded batches. While
+    an apply is cooling down, the next ten files can already be downloaded and
+    prefiltered, but no second full-PBF rewrite is started.
+    """
     sequence = first
     target = int(common.latest(cadence_base(config, cadence), retry, maximum)["sequence"])
+    if sequence > target:
+        return []
     prefetch = max(1, int(config.get("prefetch_files", 10)))
-    while sequence <= target and time.time() < due_at:
-        window_end = min(sequence + prefetch - 1, target)
-        window = list(range(sequence, window_end + 1))
-        LOG.info(
-            "prefetching %s %s update files (%s through %s)",
-            len(window), cadence, sequence, window_end,
-        )
-        with ThreadPoolExecutor(
-            max_workers=len(window), thread_name_prefix="download"
-        ) as executor:
-            downloaded = list(
-                executor.map(lambda value: download(config, cadence, value), window)
-            )
-        for value, (change, state) in zip(window, downloaded):
-            batch.append((change, state, prefilter(config, cadence, value, change)))
-        sequence = window_end + 1
-        target = max(
-            target,
-            int(common.latest(cadence_base(config, cadence), retry, maximum)["sequence"]),
-        )
-    while batch and time.time() < due_at and sequence > target:
-        time.sleep(min(5, max(0.1, due_at - time.time())))
-        target = int(common.latest(cadence_base(config, cadence), retry, maximum)["sequence"])
-        if sequence <= target:
-            break
+    window_end = min(sequence + prefetch - 1, target)
+    window = list(range(sequence, window_end + 1))
     LOG.info(
-        "%s batch window reached at %s; applying %s file(s), backlog target is %s",
-        cadence, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), len(batch), target,
+        "prefetching %s %s update files (%s through %s)",
+        len(window), cadence, sequence, window_end,
+    )
+    with ThreadPoolExecutor(
+        max_workers=len(window), thread_name_prefix="download"
+    ) as executor:
+        downloaded = list(
+            executor.map(lambda value: download(config, cadence, value), window)
+        )
+    batch = [
+        (change, state, prefilter(config, cadence, value, change))
+        for value, (change, state) in zip(window, downloaded)
+    ]
+    if time.time() < due_at:
+        LOG.info(
+            "prefetch complete through %s; full-PBF apply is gated until %s",
+            window_end,
+            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(due_at)),
+        )
+    while time.time() < due_at:
+        time.sleep(min(30, max(0.1, due_at - time.time())))
+    LOG.info(
+        "%s batch window reached at %s; applying %s file(s), backlog target was %s",
+        cadence,
+        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        len(batch),
+        target,
     )
     return batch
 
