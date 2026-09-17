@@ -111,3 +111,7 @@ image remains wrapped in this repository's Debian/Apache image so the custom
 cutover entrypoint and Traefik-facing API layout are preserved.
 The redesigned pipeline begins at release `v0.1.0`; subsequent redesigned
 releases should increment from that version.
+The torrent payload name is discovered from the torrent metadata (for example,
+`planet-260907.osm.pbf`) and is resumed in place. A stable
+`planet-latest.osm.pbf` symlink points to that controlled payload for the
+filtering and replication workers.
