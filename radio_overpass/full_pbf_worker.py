@@ -307,8 +307,9 @@ def reset_from_new_planet_snapshot(
     if slot not in {"blue", "green"}:
         slot = inactive_slot(config)
     if not filtered.exists():
-        temporary = filtered.with_suffix(filtered.suffix + ".part")
+        temporary = filtered.with_name(f".{filtered.stem}.part{filtered.suffix}")
         temporary.unlink(missing_ok=True)
+        filtered.with_suffix(filtered.suffix + ".part").unlink(missing_ok=True)
         started = time.monotonic()
         LOG.info(
             "new Planet payload %s detected; generating filtered initial PBF %s",
