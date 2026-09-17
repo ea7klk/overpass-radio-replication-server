@@ -4,6 +4,7 @@ FROM debian:bookworm-slim AS overpass-builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG OVERPASS_URL=https://dev.overpass-api.de/releases/osm-3s_latest.tar.gz
+ARG OVERPASS_SHA256=
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -13,6 +14,9 @@ RUN apt-get update \
 
 RUN mkdir -p /tmp/overpass \
     && curl --fail --location --retry 3 --retry-delay 5 --output /tmp/overpass.tar.gz "$OVERPASS_URL" \
+    && if [ -n "$OVERPASS_SHA256" ]; then \
+         echo "$OVERPASS_SHA256  /tmp/overpass.tar.gz" | sha256sum --check --status; \
+       fi \
     && tar -xzf /tmp/overpass.tar.gz --strip-components=1 -C /tmp/overpass \
     && cd /tmp/overpass \
     && ./configure --enable-lz4 \
