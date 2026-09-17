@@ -23,9 +23,10 @@ successful dependency/dependent results are applied in that same official
 sequence. Query failures leave the phase checkpoint unchanged and retry
 indefinitely.
 
-After the PBF import, the same public Overpass closure query is run for every
-initial radio root so reverse dependents that cannot be recovered by a
-forward-only PBF filter are included before the daily phase begins.
+The initial PBF import does not query public Overpass. Reverse dependents are
+queried only when a later daily, hourly, or minutely change identifies a new
+radio-tagged root. This keeps the initial load bounded while still refreshing
+the complete dependency/dependent closure for newly discovered entities.
 
 The filter preserves dependencies already present in the snapshot and also
 replays a source diff when a new root references another object from earlier
@@ -65,7 +66,8 @@ Fleet deploys the Overpass API and one replacement replication Deployment in
 
 The replication init container expects the read-only host file
 `/root/planet-260907.osm.pbf`, imports it into an isolated local-path database,
-writes the snapshot catalog and metadata, and seeds daily sequence `5108`.
+writes the snapshot catalog and metadata, and seeds the daily boundary at
+sequence `5108`.
 The current Overpass Deployment remains on `db` until the replacement has
 caught up through minute replication. A handshake then stops its dispatcher,
 swaps in `db-rebuild`, verifies the API, deletes the old database, and restarts

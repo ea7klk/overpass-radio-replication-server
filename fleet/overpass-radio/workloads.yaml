@@ -149,7 +149,7 @@ spec:
         - name: TAG_KEY_PREFIX
           value: communication:amateur_radio
         - name: INITIAL_REPLICATE_ID
-          value: "5107"
+          value: "5108"
         volumeMounts:
         - name: data
           mountPath: /srv/overpass-radio

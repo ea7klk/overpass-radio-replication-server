@@ -11,7 +11,7 @@ native gzip/grep scan before the XML parser is started.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 from pathlib import Path
@@ -90,82 +90,37 @@ def initial_checkpoint(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def bootstrap_external_dependents(config: dict[str, Any]) -> None:
-    """Add reverse dependents missing from the PBF's forward closure.
+def advance_snapshot_boundary(config: dict[str, Any], checkpoint: dict[str, Any]) -> None:
+    """Advance the private official cursor across the PBF boundary.
 
-    osmium tags-filter retains referenced objects, but a PBF does not encode a
-    cheap reverse index for parents. The public Overpass query returns each
-    root together with both directions of its closure. All successful results
-    are committed as the reserved daily-boundary sequence 5108, before daily
-    sequence 5109 is consumed.
+    The PBF already contains the tagged objects and the references retained by
+    osmium. Reverse/dependent closure queries begin only for relevant objects
+    found in later replication changes. An empty official change keeps
+    apply_osc_to_db.sh aligned without replaying the snapshot boundary.
     """
-    marker = Path(config["dependent_bootstrap_complete_file"])
-    if marker.exists():
+    boundary = int(checkpoint["sequence"])
+    cursor_path = Path(config["db_dir"]) / "replicate_id"
+    try:
+        current = int(cursor_path.read_text(encoding="ascii").strip())
+    except (FileNotFoundError, ValueError) as exc:
+        raise RuntimeError(f"private database has no valid replicate_id: {cursor_path}") from exc
+    if current >= boundary:
+        LOG.info("private official cursor already at snapshot boundary %s", current)
         return
-    state_path = Path(config["catalog_file"])
-    state = common.load_json(state_path, {})
-    if not isinstance(state, dict):
-        raise RuntimeError(f"initial catalog is not an object: {state_path}")
-    roots = sorted(set(str(item) for item in state.get("roots", [])))
-    if not roots:
-        LOG.info("initial PBF contains no radio roots; skipping external dependent bootstrap")
-        marker.write_text("no roots\n", encoding="utf-8")
-        return
-
-    work_dir = Path(config["work_dir"])
-    query_dir = work_dir / "initial-dependent-bootstrap"
-    query_dir.mkdir(parents=True, exist_ok=True)
-    known = set(state.get("roots", [])) | set(state.get("dependencies", []))
-    workers = max(1, min(len(roots), int(config.get("dependency_query_workers", 4))))
-    futures: dict[str, Future[common.RemoteRefresh]] = {}
-    refreshes: dict[str, common.RemoteRefresh] = {}
-    LOG.info(
-        "bootstrapping external dependents for %d initial radio root(s) with %d query worker(s)",
-        len(roots),
-        workers,
-    )
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        for root_key in roots:
-            kind, object_id = common.root_key_parts(root_key)
-            root_dir = query_dir / f"{kind}-{object_id}"
-            root_dir.mkdir(parents=True, exist_ok=True)
-            futures[root_key] = executor.submit(
-                common.query_overpass,
-                config,
-                root_key,
-                known,
-                root_dir / "remote.osc",
-            )
-        for root_key in roots:
-            # Any network/HTTP/XML failure aborts this phase. The outer run
-            # loop retries it, preserving the PBF and the checkpoint.
-            refreshes[root_key] = futures[root_key].result()
-
-    objects: dict[str, bytes] = {}
-    merged = state
-    for root_key in roots:
-        refresh = refreshes[root_key]
-        objects.update(refresh.objects)
-        merged = common.merge_remote_state(merged, {root_key}, refresh)
-    combined = query_dir / "initial-dependents.osc"
-    common.remote_osc(combined, objects, known)
-    config["_official_sequence"] = int(config.get("dependent_bootstrap_sequence", 5108))
+    if current != boundary - 1:
+        raise RuntimeError(
+            f"private official cursor {current} cannot advance to snapshot boundary {boundary}"
+        )
+    empty_path = Path(config["work_dir"]) / "empty-snapshot-boundary.osc"
+    common.empty_osc(empty_path)
+    config["_official_sequence"] = boundary
     common.update_database(
         config,
-        combined,
-        str(config.get("dependent_bootstrap_timestamp", "2026-09-07T00:00:00Z")),
-        description="initial external dependencies/dependents",
+        empty_path,
+        str(checkpoint["timestamp"]),
+        description="empty snapshot-boundary change",
     )
-    common.atomic_json(state_path, merged)
-    marker.write_text(
-        f"bootstrapped {len(objects)} external object(s) for {len(roots)} root(s)\n",
-        encoding="utf-8",
-    )
-    LOG.info(
-        "initial external dependent bootstrap completed: %d root(s), %d object(s)",
-        len(roots),
-        len(objects),
-    )
+    LOG.info("advanced private official cursor to snapshot boundary %s", boundary)
 
 
 def transition(
@@ -266,22 +221,15 @@ def run(config: dict[str, Any]) -> None:
     Path(config["official_replica_dir"]).mkdir(parents=True, exist_ok=True)
     Path(config["osc_inspection_dir"]).mkdir(parents=True, exist_ok=True)
 
-    while not Path(config["dependent_bootstrap_complete_file"]).exists():
-        try:
-            config["db_dir"] = str(active_db(config))
-            bootstrap_external_dependents(config)
-        except Exception:
-            LOG.exception(
-                "initial external dependent bootstrap failed; retaining the PBF import and retrying"
-            )
-            time.sleep(max(1, int(config.get("retry_initial_seconds", 15))))
-
     checkpoint = common.load_json(state_path, None)
     if not isinstance(checkpoint, dict):
+        config["db_dir"] = str(active_db(config))
         checkpoint = initial_checkpoint(config)
+        advance_snapshot_boundary(config, checkpoint)
         write_checkpoint(config, checkpoint)
         LOG.info(
-            "starting rebuild from %s in %s; PBF source is not copied or removed",
+            "starting rebuild from %s in %s; PBF source is not copied or removed; "
+            "external dependency/dependent queries begin only for later relevant changes",
             checkpoint["snapshot"],
             config["rebuild_db_dir"],
         )
