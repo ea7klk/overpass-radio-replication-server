@@ -97,6 +97,9 @@ The API is exposed through Traefik at
 `https://overpass.ea7klk.es`. The service remains unready while the fresh
 Planet file is downloading or the initial filtered staging database is being
 imported, then becomes ready after the first cutover.
+Apache access and error logs are emitted to the container stdout/stderr, so
+they are available with `kubectl logs` and in Rancher rather than only in the
+container's ephemeral `/var/log/apache2` directory.
 
 Useful checks:
 
