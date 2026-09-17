@@ -14,6 +14,13 @@ legacy_db="${LEGACY_DB_DIR:-/srv/db/live}"
 
 test -s "$planet_pbf"
 mkdir -p "$filtered_dir" "$state_dir"
+existing_active=$(tr -d '[:space:]' < "$active_slot_file" 2>/dev/null || true)
+if [[ "$existing_active" == blue || "$existing_active" == green ]] &&
+    [[ -f "/srv/db/$existing_active/nodes.map" ]]; then
+    echo "Existing active filtered database is present in slot $existing_active; skipping initial staging"
+    printf 'initial filtered staging database already present in slot %s\n' "$existing_active" > "$initial_complete_file"
+    exit 0
+fi
 if [[ -f "$initial_complete_file" && -f "$staging_db/nodes.map" ]]; then
     echo "Initial staging already complete in slot $initial_slot; skipping rebuild"
     exit 0
