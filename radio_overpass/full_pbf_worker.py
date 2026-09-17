@@ -229,6 +229,17 @@ def apply_one(config: dict[str, Any], cadence: str, sequence: int) -> dict[str, 
         "accepted" if has_tag else "discarded",
         "matching communication:amateur_radio*" if has_tag else "no matching tag",
     )
+    if has_tag:
+        marker_path = config.get("accepted_prefilter_marker_file")
+        if marker_path:
+            marker = Path(str(marker_path))
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(
+                f"{cadence}/{sequence} accepted tag prefilter: "
+                "matching communication:amateur_radio*\n",
+                encoding="utf-8",
+            )
+            LOG.info("accepted prefilter marker written: %s", marker)
     full_pbf_state = load_json(config_path(config, "full_pbf_state_file"), {})
     already_applied = (
         isinstance(full_pbf_state, dict)

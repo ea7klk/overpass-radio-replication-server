@@ -115,3 +115,29 @@ The torrent payload name is discovered from the torrent metadata (for example,
 `planet-260907.osm.pbf`) and is resumed in place. A stable
 `planet-latest.osm.pbf` symlink points to that controlled payload for the
 filtering and replication workers.
+
+## Safe replication-worker restarts
+
+Do not roll or recreate the `full-pbf-replication` pod while it has pending
+replication work. Kubernetes reruns the init containers whenever the pod is
+recreated, so an unnecessary rollout can repeat the expensive initial filter
+and staging import. Before a planned restart, wait until the daily/hourly/
+minute stream has caught up and confirm both conditions below:
+
+1. The state PVC contains `accepted-prefilter`, written only after a file logs
+   `accepted tag prefilter: matching communication:amateur_radio*`.
+2. The raw-change PVC contains no pending `.osc.gz` or `.part` files under
+   `/srv/overpass-radio/raw/day`, `/srv/overpass-radio/raw/hour`, or
+   `/srv/overpass-radio/raw/minute`.
+
+Example checks:
+
+```bash
+kubectl -n overpass-radio exec deployment/overpass-radio-replication \
+  -c full-pbf-replication -- test -s /srv/overpass-radio/state/accepted-prefilter
+kubectl -n overpass-radio exec deployment/overpass-radio-replication \
+  -c full-pbf-replication -- sh -c \
+  'find /srv/overpass-radio/raw -type f \( -name "*.osc.gz" -o -name "*.part" \) -print'
+```
+
+The second command must produce no output before the restart is authorized.
