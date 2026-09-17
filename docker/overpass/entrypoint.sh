@@ -47,6 +47,9 @@ cors_config=/etc/apache2/conf-enabled/overpass-radio-cors.conf
 
 maintenance_lock="${OVERPASS_MAINTENANCE_LOCK:-/srv/overpass-radio/.maintenance.lock}"
 maintenance_stale_seconds="${OVERPASS_MAINTENANCE_LOCK_STALE_SECONDS:-21600}"
+rebuild_db_dir="${OVERPASS_REBUILD_DB_DIR:-/srv/overpass-radio/db-rebuild}"
+cutover_ready_file="${OVERPASS_CUTOVER_READY_FILE:-/srv/overpass-radio/cutover-ready}"
+cutover_complete_file="${OVERPASS_CUTOVER_COMPLETE_FILE:-/srv/overpass-radio/cutover-complete}"
 dispatcher_pid=''
 apache_pid=''
 
@@ -73,6 +76,67 @@ stop_dispatcher() {
     dispatcher_pid=''
 }
 
+start_apache() {
+    apache2ctl -D FOREGROUND &
+    apache_pid=$!
+}
+
+stop_apache() {
+    [[ -z "$apache_pid" ]] && return 0
+    kill "$apache_pid" 2>/dev/null || true
+    wait "$apache_pid" 2>/dev/null || true
+    apache_pid=''
+}
+
+api_ready() {
+    curl --noproxy '*' --fail --silent --get \
+        http://127.0.0.1/api/interpreter \
+        --data-urlencode 'data=[out:json];node(1);out;' |
+        grep -q '"version"'
+}
+
+perform_cutover() {
+    [[ -f "$cutover_ready_file" ]] || return 0
+    [[ -f "$cutover_complete_file" ]] && return 0
+    [[ -f "$rebuild_db_dir/nodes.map" ]] || {
+        printf 'cutover requested but replacement database is incomplete: %s\n' "$rebuild_db_dir" >&2
+        return 1
+    }
+
+    printf 'Stopping public Overpass for replacement database cutover\n'
+    stop_apache
+    stop_dispatcher
+
+    old_db_dir="${db_dir}.before-rebuild-$(date +%s)"
+    mv "$db_dir" "$old_db_dir"
+    mv "$rebuild_db_dir" "$db_dir"
+    rm -f "$cutover_ready_file"
+    printf 'replacement database installed; old database is retained temporarily at %s\n' "$old_db_dir"
+
+    start_dispatcher
+    start_apache
+    for _ in {1..120}; do
+        if api_ready; then
+            touch "$cutover_complete_file"
+            rm -rf -- "$old_db_dir"
+            printf 'Replacement Overpass database is healthy; deleted old database %s\n' "$old_db_dir"
+            return 0
+        fi
+        sleep 1
+    done
+
+    printf 'Replacement Overpass database did not become healthy; rolling back\n' >&2
+    stop_apache
+    stop_dispatcher
+    failed_db_dir="${db_dir}.failed-rebuild-$(date +%s)"
+    mv "$db_dir" "$failed_db_dir"
+    mv "$old_db_dir" "$db_dir"
+    start_dispatcher
+    start_apache
+    printf 'Rollback complete; failed replacement retained at %s\n' "$failed_db_dir" >&2
+    return 1
+}
+
 cleanup() {
     trap - TERM INT EXIT
     [[ -n "$apache_pid" ]] && kill "$apache_pid" 2>/dev/null || true
@@ -81,12 +145,18 @@ cleanup() {
 }
 trap cleanup TERM INT EXIT
 
-start_dispatcher
-
-apache2ctl -D FOREGROUND &
-apache_pid=$!
+if [[ -f "$cutover_ready_file" && ! -f "$cutover_complete_file" ]]; then
+    perform_cutover
+else
+    start_dispatcher
+    start_apache
+fi
 
 while kill -0 "$apache_pid" 2>/dev/null; do
+    if [[ -f "$cutover_ready_file" && ! -f "$cutover_complete_file" ]]; then
+        perform_cutover || exit 1
+        continue
+    fi
     if [[ -f "$maintenance_lock" ]]; then
         lock_age=$(( $(date +%s) - $(stat -c %Y "$maintenance_lock" 2>/dev/null || date +%s) ))
         if (( lock_age > maintenance_stale_seconds )); then

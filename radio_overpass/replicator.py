@@ -7,6 +7,7 @@ import argparse
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import gzip
 import json
 import logging
 import os
@@ -814,8 +815,105 @@ def update_database(
     timestamp: str,
     description: str = "filtered change",
 ) -> None:
+    if config.get("official_replica_dir"):
+        apply_with_official_helper(config, osc_path, timestamp, description)
+        return
     with DispatcherMaintenance(config):
         _update_database(config, osc_path, timestamp, description)
+
+
+def empty_osc(path: Path) -> None:
+    path.write_bytes(
+        b"<?xml version='1.0' encoding='UTF-8'?>\n"
+        b'<osmChange version="0.6" generator="radio-overpass">\n'
+        b"<create></create><modify></modify><delete></delete>\n"
+        b"</osmChange>\n"
+    )
+
+
+def _gzip_copy(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
+    try:
+        with source.open("rb") as raw, gzip.open(temporary, "wb", compresslevel=6) as zipped:
+            shutil.copyfileobj(raw, zipped, length=1024 * 1024)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def apply_with_official_helper(
+    config: dict[str, Any],
+    osc_path: Path,
+    timestamp: str,
+    description: str,
+) -> None:
+    """Publish exactly one change and wait for apply_osc_to_db.sh to commit it.
+
+    The rebuild worker stages one official sequence at a time. This removes
+    worker-side batching while retaining Overpass's supported permanent
+    apply_osc_to_db.sh consumer and its durable replicate_id cursor.
+    """
+    sequence_value = config.get("_official_sequence")
+    if sequence_value is None:
+        raise RuntimeError("official helper mode requires _official_sequence")
+    sequence = int(sequence_value)
+    replica_dir = Path(config["official_replica_dir"])
+    db_dir = Path(config["db_dir"])
+    cursor_path = db_dir / "replicate_id"
+    current = None
+    try:
+        current = int(cursor_path.read_text(encoding="ascii").strip())
+    except (FileNotFoundError, ValueError):
+        pass
+    if current is not None and current >= sequence:
+        LOG.info(
+            "official applier already reached %s; acknowledging %s for %s",
+            current,
+            sequence,
+            description,
+        )
+        return
+    if current is not None and current != sequence - 1:
+        raise RuntimeError(
+            f"official applier cursor {current} cannot accept sequence {sequence}; "
+            "cadence boundary was not initialized correctly"
+        )
+
+    target = replica_dir / sequence_path(sequence)
+    target.mkdir(parents=True, exist_ok=True)
+    staged = target / f"{sequence % 1000:03d}.osc.gz"
+    _gzip_copy(osc_path, staged)
+    atomic_text(
+        target / f"{sequence % 1000:03d}.state.txt",
+        f"sequenceNumber={sequence}\ntimestamp={timestamp}\n",
+    )
+    atomic_text(replica_dir / "replicate_id", str(sequence) + "\n")
+    LOG.info(
+        "published %s as official replication sequence %s; waiting for "
+        "apply_osc_to_db.sh",
+        description,
+        sequence,
+    )
+    timeout = max(60, int(config.get("official_apply_timeout_seconds", 3600)))
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            applied = int(cursor_path.read_text(encoding="ascii").strip())
+        except (FileNotFoundError, ValueError):
+            applied = None
+        if applied is not None and applied >= sequence:
+            LOG.info(
+                "apply_osc_to_db.sh committed official sequence %s for %s",
+                sequence,
+                description,
+            )
+            return
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"apply_osc_to_db.sh did not commit sequence {sequence} within {timeout}s"
+            )
+        time.sleep(2)
 
 
 def _update_database(
@@ -1044,8 +1142,12 @@ def quick_check(
     prefix: str,
     retained: set[str],
     pattern_path: Path,
+    *,
+    tag_only: bool = False,
 ) -> str | None:
     """Return why a source needs parsing, or None if it can be discarded."""
+    if tag_only:
+        return "tag key prefix" if gzip_contains_tag_prefix(source_path, prefix) else None
     if gzip_contains(source_path, needle=prefix):
         return "tag prefix"
     if not write_id_patterns(pattern_path, retained):
@@ -1140,6 +1242,7 @@ def process_one(
                 config["tag_key_prefix"],
                 retained,
                 temp_path / "quick-check.ids",
+                tag_only=bool(config.get("tag_only_prefilter", False)),
             )
             first_quick_check_seconds = time.monotonic() - quick_check_started
             quick_check_seconds += first_quick_check_seconds
@@ -1156,6 +1259,16 @@ def process_one(
                     cadence,
                     change_url,
                 )
+                if apply_database and config.get("official_replica_dir"):
+                    empty_path = temp_path / "empty.osc"
+                    empty_osc(empty_path)
+                    config["_official_sequence"] = sequence
+                    update_database(
+                        config,
+                        empty_path,
+                        state["timestamp"],
+                        description=f"empty filtered replication change ({cadence}/{sequence})",
+                    )
                 return state
             include: set[str] = set()
 
@@ -1263,20 +1376,27 @@ def process_one(
                         # Queries run concurrently, but local writes remain
                         # ordered. Reclassify objects against the state after
                         # each preceding root so overlapping results are safe.
-                        remote_osc(
-                            refresh.path,
-                            refresh.objects,
-                            set(current_state.get("roots", []))
-                            | set(current_state.get("dependencies", [])),
+                        known_remote_keys = set(current_state.get("roots", [])) | set(
+                            current_state.get("dependencies", [])
                         )
-                        current_state = apply_remote_refresh(
-                            config,
-                            root_key,
-                            refresh,
-                            current_state,
-                            state["timestamp"],
-                            f"{cadence}/{sequence}",
-                        )
+                        remote_osc(refresh.path, refresh.objects, known_remote_keys)
+                        if config.get("official_replica_dir"):
+                            # All roots discovered in one source file must be
+                            # committed as one official sequence. Applying a
+                            # second helper update with the same sequence
+                            # would make the official cursor ambiguous.
+                            current_state = merge_remote_state(
+                                current_state, {root_key}, refresh
+                            )
+                        else:
+                            current_state = apply_remote_refresh(
+                                config,
+                                root_key,
+                                refresh,
+                                current_state,
+                                state["timestamp"],
+                                f"{cadence}/{sequence}",
+                            )
                         remote_objects.update(refresh.objects)
                         remote_refs.update(refresh.refs)
                         remote_names.update(refresh.names)
@@ -1292,12 +1412,38 @@ def process_one(
                     remote_seconds,
                 )
 
+                if config.get("official_replica_dir"):
+                    combined_remote = remote_dir / "combined.osc"
+                    remote_osc(combined_remote, remote_objects, known_keys)
+                    config["_official_sequence"] = sequence
+                    update_database(
+                        config,
+                        combined_remote,
+                        state["timestamp"],
+                        description=f"public Overpass dependencies/dependents ({cadence}/{sequence})",
+                    )
+                    atomic_json(catalog_path(config), current_state)
+                    for root_key in sorted(root_keys):
+                        LOG.info(
+                            "applied external Overpass dependencies immediately for %s at %s/%s",
+                            root_key,
+                            cadence,
+                            sequence,
+                        )
+
             has_database_changes = any(item["op"] in {"add", "remove"} for item in events)
             apply_started = time.monotonic()
-            if remote_refresh is None and has_database_changes and apply_database:
+            if remote_refresh is None and apply_database and (
+                has_database_changes or config.get("official_replica_dir")
+            ):
+                config["_official_sequence"] = sequence
+                update_path = filtered_path
+                if not has_database_changes and config.get("official_replica_dir"):
+                    update_path = temp_path / "empty-after-filter.osc"
+                    empty_osc(update_path)
                 update_database(
                     config,
-                    filtered_path,
+                    update_path,
                     state["timestamp"],
                     description=f"filtered replication change ({cadence}/{sequence})",
                 )

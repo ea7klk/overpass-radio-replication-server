@@ -2,12 +2,13 @@
 set -eu
 
 pbf_path="${INITIAL_PBF_PATH:-/initial/planet-260907.osm.pbf}"
-db_dir="${OVERPASS_DB_DIR:-/srv/overpass-radio/db}"
+db_dir="${OVERPASS_DB_DIR:-/srv/overpass-radio/db-rebuild}"
 work_dir="${OVERPASS_WORK_DIR:-/srv/overpass-radio/work}"
 catalog_file="${CATALOG_FILE:-/srv/overpass-radio/catalog.json}"
 metadata_file="${SNAPSHOT_METADATA_FILE:-/srv/overpass-radio/initial-snapshot.json}"
 tag_prefix="${TAG_KEY_PREFIX:-communication:amateur_radio}"
 initial_replicate_id="${INITIAL_REPLICATE_ID:-}"
+cutover_ready_file="${CUTOVER_READY_FILE:-}"
 
 seed_replicate_id() {
     [ -z "$initial_replicate_id" ] && return 0
@@ -81,4 +82,7 @@ seed_replicate_id
 
 mv "$temporary_catalog" "$catalog_file"
 mv "$temporary_metadata" "$metadata_file"
+if [ -n "$cutover_ready_file" ]; then
+    printf 'initial PBF import completed; replacement database is ready for phased catch-up\n' > "$cutover_ready_file"
+fi
 echo "Initial PBF import completed; the source PBF was not copied to the PVC"

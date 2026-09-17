@@ -47,7 +47,7 @@ jobs:
       - name: Compile Python modules
         run: python -m compileall -q radio_overpass
       - name: Validate shell entrypoints
-        run: bash -n docker/overpass/entrypoint.sh docker/replicator/entrypoint.sh docker/replicator/initial-import.sh docker/replicator/apply-minute.sh
+        run: bash -n docker/overpass/entrypoint.sh docker/replicator/entrypoint.sh docker/replicator/initial-import.sh docker/replicator/apply-minute.sh docker/replicator/rebuild-entrypoint.sh
       - name: Validate Compose definition
         run: docker compose config --quiet
 
@@ -82,7 +82,7 @@ jobs:
           elif [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
             raw_version="${GITHUB_REF#refs/tags/}"
             push_images=true
-            targets='["replicator"]'
+            targets='["replicator","overpass"]'
           else
             raw_version="${INPUT_VERSION:-0.0.0-manual}"
             push_images="${INPUT_PUSH:-false}"

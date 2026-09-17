@@ -82,9 +82,11 @@ COPY docker/replicator/config.json /app/config.container.json
 COPY docker/replicator/entrypoint.sh /usr/local/bin/radio-overpass-entrypoint
 COPY docker/replicator/initial-import.sh /usr/local/bin/radio-overpass-initial-import
 COPY docker/replicator/apply-minute.sh /usr/local/bin/radio-overpass-apply-minute
+COPY docker/replicator/rebuild-entrypoint.sh /usr/local/bin/radio-overpass-rebuild-entrypoint
 RUN chmod 755 /usr/local/bin/radio-overpass-entrypoint \
     && chmod 755 /usr/local/bin/radio-overpass-initial-import \
-    && chmod 755 /usr/local/bin/radio-overpass-apply-minute
+    && chmod 755 /usr/local/bin/radio-overpass-apply-minute \
+    && chmod 755 /usr/local/bin/radio-overpass-rebuild-entrypoint
 
 ENV CONFIG_PATH=/etc/overpass-radio.json
 VOLUME ["/srv/overpass-radio"]
