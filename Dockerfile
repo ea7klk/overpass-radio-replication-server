@@ -27,6 +27,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY docker/overpass/apache.conf /etc/apache2/conf-available/overpass-radio.conf
+COPY docker/overpass/000-default.conf /etc/apache2/sites-available/000-default.conf
 COPY docker/overpass/entrypoint.sh /usr/local/bin/overpass-radio-entrypoint
 RUN chmod 755 /usr/local/bin/overpass-radio-entrypoint \
     && a2enconf overpass-radio
