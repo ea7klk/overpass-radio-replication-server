@@ -17,15 +17,16 @@ The replicator image installs the Debian `aria2` package and verifies that
 `aria2c` is available during the image build.
 
 The Planet bootstrap records the torrent SHA-256, the original payload
-filename and download size, and the current payload size in
-`planet-download.json`. If the torrent and current recorded file size are
-unchanged, the existing PBF is reused. If a newer torrent points to another
-payload, the previous payload is removed before the replacement download
-starts; the new file is downloaded into the same controlled PVC and then
-exposed through the stable symlink. After each `osmium apply-changes`, the
-updated payload replaces the previous payload in place and the current size
-is recorded. This keeps one full Planet payload on disk rather than
-accumulating old versions.
+filename, download size, current payload size, and PBF replication timestamp
+in `planet-download.json`. If the torrent, payload filename, and current
+recorded file size are unchanged, the existing PBF is reused. If a newer
+torrent points to another payload, the previous payload is removed before the
+replacement download starts; the new file is downloaded into the same
+controlled PVC and only then exposed through an atomically refreshed
+`planet-latest.osm.pbf` symlink. After each `osmium apply-changes`, the updated
+payload replaces the previous payload in place and the current size is
+recorded. This keeps one full Planet payload on disk rather than accumulating
+old versions.
 
 The worker processes replication in order: daily, hourly, then minutely. Each
 raw `.osc.gz` file is first scanned for a
@@ -47,10 +48,18 @@ This prevents the API process from deleting a partially initialized database
 while Overpass `update_database` is still writing files such as
 `nodes.bin`.
 
-If the full-PBF step completed but the replacement import was interrupted,
+If the controlled Planet payload changes, the worker treats it as a new source
+snapshot: it filters and imports that PBF into the inactive slot, waits for the
+replacement to be healthy, and resets the daily replication boundary to the
+new PBF timestamp. It does not replay changes already represented by the new
+snapshot. If the full-PBF step completed but the replacement import was interrupted,
 the worker detects the matching `filtered-<cadence>-<first>-<last>.osm.pbf`
 artifact and resumes from that file. It advances replication state only after
 the replacement import succeeds, so it does not repeat the full-PBF update.
+The full-PBF writer also keeps an atomic apply journal: an interrupted
+temporary output is discarded, while a completed output is committed without
+reapplying its OSC files. The filtered-import checkpoint similarly prevents a
+completed staging import from being repeated after a restart.
 
 When a replacement slot is ready, a second Overpass dispatcher/API instance
 serves it and passes a local health check before the active slot marker is
@@ -145,7 +154,10 @@ releases should increment from that version.
 The torrent payload name is discovered from the torrent metadata (for example,
 `planet-260907.osm.pbf`) and is resumed in place. A stable
 `planet-latest.osm.pbf` symlink points to that controlled payload for the
-filtering and replication workers.
+filtering and replication workers. The bootstrap does not switch that symlink
+while a new payload is incomplete, and the worker never applies replication
+files to a newly downloaded Planet payload before resetting to its timestamp
+boundary.
 
 ## Safe replication-worker restarts
 

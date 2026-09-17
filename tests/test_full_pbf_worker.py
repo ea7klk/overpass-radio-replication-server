@@ -5,12 +5,95 @@ from pathlib import Path
 from unittest.mock import patch
 
 from radio_overpass.full_pbf_worker import (
+    apply_batch,
     import_filtered_pbf,
+    new_planet_snapshot,
     recover_filtered_artifact,
 )
 
 
 class StagingSlotCoordinationTest(unittest.TestCase):
+    def test_detects_completed_planet_payload_with_new_timestamp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            planet_metadata = root / "planet-download.json"
+            snapshot_metadata = root / "snapshot-metadata.json"
+            planet_metadata.write_text(
+                json.dumps({
+                    "source_file": "planet-260914.osm.pbf",
+                    "timestamp": "2026-09-14T00:00:00Z",
+                }),
+                encoding="utf-8",
+            )
+            snapshot_metadata.write_text(
+                json.dumps({
+                    "source_file": "planet-latest.osm.pbf",
+                    "timestamp": "2026-09-07T00:00:04Z",
+                }),
+                encoding="utf-8",
+            )
+
+            result = new_planet_snapshot({
+                "planet_metadata_file": str(planet_metadata),
+                "snapshot_metadata_file": str(snapshot_metadata),
+                "planet_pbf": str(root / "planet-latest.osm.pbf"),
+            })
+
+            self.assertEqual(result["source_file"], "planet-260914.osm.pbf")
+
+    def test_ignores_legacy_symlink_name_without_new_timestamp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            planet_metadata = root / "planet-download.json"
+            snapshot_metadata = root / "snapshot-metadata.json"
+            planet_metadata.write_text(
+                '{"source_file":"planet-260907.osm.pbf"}', encoding="utf-8"
+            )
+            snapshot_metadata.write_text(
+                '{"source_file":"planet-latest.osm.pbf",'
+                '"timestamp":"2026-09-07T00:00:04Z"}', encoding="utf-8"
+            )
+
+            self.assertIsNone(new_planet_snapshot({
+                "planet_metadata_file": str(planet_metadata),
+                "snapshot_metadata_file": str(snapshot_metadata),
+                "planet_pbf": str(root / "planet-latest.osm.pbf"),
+            }))
+
+    def test_apply_batch_skips_full_pbf_when_checkpoint_already_covers_batch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = root / "raw" / "day"
+            raw.mkdir(parents=True)
+            change = raw / "000005109.osc.gz"
+            change.write_bytes(b"raw")
+            full_state = root / "state" / "full-pbf-state.json"
+            full_state.parent.mkdir()
+            full_state.write_text(
+                '{"cadence":"day","sequence":5109,'
+                '"timestamp":"2026-09-17T00:00:00Z"}',
+                encoding="utf-8",
+            )
+            config = {
+                "raw_dir": str(root / "raw"),
+                "full_pbf_state_file": str(full_state),
+            }
+            batch = [
+                (
+                    change,
+                    {"sequence": 5109, "timestamp": "2026-09-17T00:00:00Z"},
+                    False,
+                )
+            ]
+            with patch(
+                "radio_overpass.full_pbf_worker.apply_full_changes"
+            ) as apply:
+                result = apply_batch(config, "day", 5109, batch)
+
+            apply.assert_not_called()
+            self.assertEqual(result["sequence"], 5109)
+            self.assertFalse(change.exists())
+
     def test_building_marker_survives_import_and_is_cleared_after_success(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -84,7 +167,7 @@ class StagingSlotCoordinationTest(unittest.TestCase):
                 )
 
             self.assertEqual(recovered["sequence"], 5118)
-            import_pbf.assert_called_once_with(config, artifact, "green")
+            import_pbf.assert_called_once_with(config, artifact, "green", "day", 5109, 5118)
             self.assertEqual(
                 json.loads(state_file.read_text(encoding="utf-8"))["sequence"],
                 5118,

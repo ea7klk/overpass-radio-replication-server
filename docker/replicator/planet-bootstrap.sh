@@ -17,6 +17,15 @@ if [[ -f "$torrent_file" ]]; then
     old_torrent_sha=$(sha256sum "$torrent_file" | awk '{print $1}')
 fi
 
+payload_name=$(aria2c --show-files "$new_torrent" 2>/dev/null |
+    sed -n -E 's/^[[:space:]]*[0-9]+\|([^|]+)$/\1/p' | head -n 1)
+if [[ -z "$payload_name" ]]; then
+    echo "Could not determine the PBF payload name from $new_torrent" >&2
+    exit 2
+fi
+payload_name=$(basename "$payload_name")
+payload_path="$planet_dir/$payload_name"
+
 recorded_size=''
 if [[ -s "$metadata_file" ]]; then
     recorded_size=$(python3 - "$metadata_file" <<'PY'
@@ -40,22 +49,22 @@ if [[ -L "$stable_file" && -s "$stable_file" ]]; then
     current_size=$(stat -Lc '%s' "$stable_file")
 fi
 
-if [[ "$new_torrent_sha" == "$old_torrent_sha" && -n "$recorded_size" && "$current_size" == "$recorded_size" ]]; then
+current_target=''
+if [[ -L "$stable_file" ]]; then
+    current_target=$(basename "$(readlink "$stable_file")")
+fi
+
+if [[ "$new_torrent_sha" == "$old_torrent_sha" &&
+    "$current_target" == "$payload_name" &&
+    -n "$recorded_size" && "$current_size" == "$recorded_size" &&
+    -s "$payload_path" ]]; then
     echo "Planet torrent is unchanged; retaining the controlled local PBF"
     rm -f "$new_torrent"
     exit 0
 fi
 
 mv "$new_torrent" "$torrent_file"
-
-payload_name=$(aria2c --show-files "$torrent_file" 2>/dev/null |
-    sed -n -E 's/^[[:space:]]*[0-9]+\|([^|]+)$/\1/p' | head -n 1)
-if [[ -z "$payload_name" ]]; then
-    echo "Could not determine the PBF payload name from $torrent_file" >&2
-    exit 2
-fi
-payload_name=$(basename "$payload_name")
-pbf_file="$planet_dir/$payload_name"
+pbf_file="$payload_path"
 
 previous_name=''
 if [[ -s "$metadata_file" ]]; then
@@ -100,10 +109,37 @@ aria2c \
     "$torrent_file"
 
 test -s "$pbf_file"
-ln -sfn "$payload_name" "$stable_file"
 size_bytes=$(stat -c '%s' "$pbf_file")
+symlink_tmp="$stable_file.tmp.$$"
+rm -f -- "$symlink_tmp"
+ln -s -- "$payload_name" "$symlink_tmp"
+mv -Tf -- "$symlink_tmp" "$stable_file"
 metadata_tmp="$metadata_file.part"
-printf '{\n  "source_file": "%s",\n  "download_size_bytes": %s,\n  "current_size_bytes": %s,\n  "size_bytes": %s,\n  "torrent_sha256": "%s"\n}\n' \
-    "$payload_name" "$size_bytes" "$size_bytes" "$size_bytes" "$new_torrent_sha" > "$metadata_tmp"
+fileinfo_tmp="$metadata_file.osmium.part"
+osmium fileinfo --json --no-crc "$pbf_file" > "$fileinfo_tmp"
+python3 - "$fileinfo_tmp" "$metadata_tmp" "$payload_name" "$size_bytes" "$new_torrent_sha" <<'PY'
+import json
+import sys
+
+info = json.loads(open(sys.argv[1], encoding="utf-8").read())
+options = info.get("header", {}).get("option", {})
+timestamp = options.get("osmosis_replication_timestamp")
+if not timestamp:
+    raise SystemExit("Downloaded Planet PBF has no replication timestamp")
+sequence = options.get("osmosis_replication_sequence_number")
+record = {
+    "source_file": sys.argv[3],
+    "download_size_bytes": int(sys.argv[4]),
+    "current_size_bytes": int(sys.argv[4]),
+    "size_bytes": int(sys.argv[4]),
+    "torrent_sha256": sys.argv[5],
+    "timestamp": timestamp,
+    "replication_sequence": int(sequence) if sequence is not None else None,
+}
+with open(sys.argv[2], "w", encoding="utf-8") as target:
+    json.dump(record, target, indent=2)
+    target.write("\n")
+PY
+rm -f -- "$fileinfo_tmp"
 mv "$metadata_tmp" "$metadata_file"
 echo "Fresh Planet PBF is ready: $stable_file -> $payload_name (${size_bytes} bytes; download completed in $(( $(date +%s) - download_started ))s)"

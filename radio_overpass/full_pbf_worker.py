@@ -117,6 +117,82 @@ def clear_marker(config: dict[str, Any], key: str) -> None:
     Path(str(path_value)).unlink(missing_ok=True)
 
 
+def full_pbf_state(config: dict[str, Any]) -> dict[str, Any] | None:
+    path = config.get("full_pbf_state_file")
+    if not path:
+        return None
+    value = load_json(Path(str(path)), None)
+    return value if isinstance(value, dict) else None
+
+
+def full_pbf_contains_batch(
+    config: dict[str, Any], cadence: str, last: int
+) -> bool:
+    state = full_pbf_state(config)
+    return bool(
+        state
+        and state.get("cadence") == cadence
+        and int(state.get("sequence", -1)) >= last
+    )
+
+
+def resume_full_pbf_apply(
+    config: dict[str, Any],
+    cadence: str,
+    first: int,
+    last: int,
+    timestamp: str,
+    payload: Path,
+    next_pbf: Path,
+) -> bool:
+    journal_path = config.get("full_pbf_apply_journal_file")
+    if not journal_path:
+        return False
+    path = Path(str(journal_path))
+    journal = load_json(path, None)
+    if not isinstance(journal, dict):
+        return False
+    if (
+        journal.get("cadence") != cadence
+        or int(journal.get("first", -1)) != first
+        or int(journal.get("last", -1)) != last
+    ):
+        return False
+    phase = journal.get("phase")
+    if phase == "applying":
+        next_pbf.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+        LOG.info(
+            "discarding incomplete full-PBF apply checkpoint for %s through %s; "
+            "the source PBF remains unchanged",
+            first,
+            last,
+        )
+        return False
+    if phase not in {"built", "switched"}:
+        return False
+    target_size = int(journal.get("target_size_bytes", -1))
+    if phase == "built":
+        if next_pbf.exists():
+            next_pbf.replace(payload)
+        elif target_size < 0 or payload.stat().st_size != target_size:
+            return False
+    record_current_planet_size(config, payload)
+    write_json(
+        config_path(config, "full_pbf_state_file"),
+        {"cadence": cadence, "sequence": last, "timestamp": timestamp},
+    )
+    path.unlink(missing_ok=True)
+    LOG.info(
+        "recovered full Planet PBF apply for %s batch %s through %s without "
+        "reapplying OSC files",
+        cadence,
+        first,
+        last,
+    )
+    return True
+
+
 def record_current_planet_size(config: dict[str, Any], payload: Path) -> None:
     metadata_path = config.get("planet_metadata_file")
     if not metadata_path:
@@ -126,6 +202,174 @@ def record_current_planet_size(config: dict[str, Any], payload: Path) -> None:
         metadata = {}
     metadata["current_size_bytes"] = payload.stat().st_size
     write_json(Path(str(metadata_path)), metadata)
+
+
+def planet_download_metadata(config: dict[str, Any]) -> dict[str, Any] | None:
+    path = config.get("planet_metadata_file")
+    if not path:
+        return None
+    value = load_json(Path(str(path)), None)
+    return value if isinstance(value, dict) else None
+
+
+def new_planet_snapshot(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Return completed Planet metadata when it is newer than the imported snapshot."""
+    planet = planet_download_metadata(config)
+    snapshot_path = config.get("snapshot_metadata_file")
+    snapshot = (
+        load_json(Path(str(snapshot_path)), None)
+        if snapshot_path
+        else None
+    )
+    if not isinstance(planet, dict) or not isinstance(snapshot, dict):
+        return None
+    planet_source = str(planet.get("source_file", ""))
+    snapshot_source = str(snapshot.get("source_file", ""))
+    planet_timestamp = str(planet.get("timestamp", ""))
+    snapshot_timestamp = str(snapshot.get("timestamp", ""))
+    timestamp_changed = bool(
+        planet_timestamp and snapshot_timestamp and
+        planet_timestamp != snapshot_timestamp
+    )
+    source_changed = bool(planet_source and snapshot_source and
+                          planet_source != snapshot_source)
+    # Older releases recorded the stable symlink rather than its payload name.
+    # Do not treat that legacy spelling as a new snapshot unless the bootstrap
+    # metadata also proves that the completed PBF timestamp changed.
+    legacy_name = Path(str(config["planet_pbf"])).name
+    if snapshot_source == legacy_name and not planet_timestamp:
+        source_changed = False
+    if not (source_changed or timestamp_changed):
+        return None
+    if not planet_timestamp:
+        raise RuntimeError(
+            "completed Planet metadata changed but has no snapshot timestamp; "
+            "the PBF must be re-indexed before replication can resume"
+        )
+    return planet
+
+
+def clear_replication_inputs(config: dict[str, Any], keep_filtered: Path | None = None) -> None:
+    for cadence in CADENCES:
+        directory = config_path(config, "raw_dir") / cadence
+        if not directory.exists():
+            continue
+        for path in directory.iterdir():
+            if path.is_file() and (path.name.endswith(".osc.gz") or path.name.endswith(".part")):
+                path.unlink(missing_ok=True)
+    work_dir = config_path(config, "work_dir")
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    filtered_dir = config_path(config, "filtered_dir")
+    filtered_dir.mkdir(parents=True, exist_ok=True)
+    for path in filtered_dir.glob("*.osm.pbf"):
+        if keep_filtered is None or path != keep_filtered:
+            path.unlink(missing_ok=True)
+    for key in (
+        "accepted_prefilter_marker_file",
+        "ready_slot_file",
+        "building_slot_file",
+        "full_pbf_apply_journal_file",
+        "filtered_import_state_file",
+    ):
+        clear_marker(config, key)
+
+
+def reset_from_new_planet_snapshot(
+    config: dict[str, Any], planet: dict[str, Any]
+) -> dict[str, Any]:
+    """Build and publish a filtered DB from a newly completed Planet PBF."""
+    source = Path(str(planet["source_file"])).name
+    timestamp = str(planet["timestamp"])
+    filtered_dir = config_path(config, "filtered_dir")
+    filtered_dir.mkdir(parents=True, exist_ok=True)
+    filtered = filtered_dir / f"initial-{source}"
+    if filtered.suffix != ".pbf":
+        filtered = filtered.with_suffix(filtered.suffix + ".osm.pbf")
+    reset_path = config.get("planet_reset_state_file")
+    checkpoint = load_json(Path(str(reset_path)), None) if reset_path else None
+    checkpoint_matches = (
+        isinstance(checkpoint, dict) and
+        checkpoint.get("source_file") == source and
+        checkpoint.get("timestamp") == timestamp
+    )
+    if not checkpoint_matches:
+        clear_replication_inputs(config, filtered if filtered.exists() else None)
+        checkpoint = {
+            "phase": "filtering",
+            "source_file": source,
+            "timestamp": timestamp,
+        }
+        if reset_path:
+            write_json(Path(str(reset_path)), checkpoint)
+    slot = str(checkpoint.get("slot", "")) if isinstance(checkpoint, dict) else ""
+    if slot not in {"blue", "green"}:
+        slot = inactive_slot(config)
+    if not filtered.exists():
+        temporary = filtered.with_suffix(filtered.suffix + ".part")
+        temporary.unlink(missing_ok=True)
+        started = time.monotonic()
+        LOG.info(
+            "new Planet payload %s detected; generating filtered initial PBF %s",
+            source,
+            filtered,
+        )
+        subprocess.run(
+            [
+                "osmium", "tags-filter", str(config_path(config, "planet_pbf")),
+                f"{config['tag_key_prefix']}*", "-o", str(temporary),
+                "--progress", "--overwrite", "--verbose",
+            ],
+            check=True,
+        )
+        temporary.replace(filtered)
+        LOG.info(
+            "new Planet filtering completed in %.1fs: %s",
+            time.monotonic() - started,
+            filtered,
+        )
+        checkpoint["phase"] = "filtered"
+        if reset_path:
+            write_json(Path(str(reset_path)), checkpoint)
+    else:
+        LOG.info("reusing completed filtered PBF for new Planet payload: %s", filtered)
+    if checkpoint.get("phase") != "imported" or not (slot_dir(config, slot) / "nodes.bin").exists():
+        config["last_change_timestamp"] = timestamp
+        checkpoint["phase"] = "importing"
+        checkpoint["slot"] = slot
+        if reset_path:
+            write_json(Path(str(reset_path)), checkpoint)
+        import_filtered_pbf(config, filtered, slot)
+        checkpoint["phase"] = "imported"
+        if reset_path:
+            write_json(Path(str(reset_path)), checkpoint)
+    else:
+        LOG.info("new Planet filtered database import was already complete in %s", slot)
+    boundary = first_sequence_after(config, "day", timestamp) - 1
+    snapshot = {
+        "source_file": source,
+        "timestamp": timestamp,
+        "replication_sequence": planet.get("replication_sequence"),
+    }
+    write_json(config_path(config, "snapshot_metadata_file"), snapshot)
+    state = {
+        "cadence": "day",
+        "sequence": boundary,
+        "timestamp": timestamp,
+        "last_batch_applied_at": 0,
+    }
+    write_json(config_path(config, "full_pbf_state_file"), state)
+    write_json(config_path(config, "state_file"), state)
+    if reset_path:
+        Path(str(reset_path)).unlink(missing_ok=True)
+    LOG.info(
+        "new Planet snapshot %s is active through %s; daily replication resumes at %s",
+        source,
+        timestamp,
+        boundary + 1,
+    )
+    return state
 
 
 def inactive_slot(config: dict[str, Any]) -> str:
@@ -182,6 +426,20 @@ def recover_filtered_artifact(
     if recovery is None:
         return None
     artifact, last, timestamp = recovery
+    completion_path = config.get("filtered_import_state_file")
+    completion = (
+        load_json(Path(str(completion_path)), None)
+        if completion_path
+        else None
+    )
+    completion_matches = (
+        isinstance(completion, dict)
+        and completion.get("cadence") == cadence
+        and int(completion.get("first", -1)) == first
+        and int(completion.get("last", -1)) == last
+        and completion.get("slot") in {"blue", "green"}
+        and (slot_dir(config, str(completion["slot"])) / "nodes.bin").exists()
+    )
     LOG.info(
         "recovering existing filtered PBF %s for %s batch %s through %s; "
         "skipping full-PBF merge/apply",
@@ -191,7 +449,18 @@ def recover_filtered_artifact(
         last,
     )
     config["last_change_timestamp"] = timestamp
-    import_filtered_pbf(config, artifact, inactive_slot(config))
+    if completion_matches:
+        slot = str(completion["slot"])
+        write_marker(config, "ready_slot_file", slot)
+        LOG.info(
+            "filtered import for %s through %s was already complete in %s; "
+            "skipping re-import",
+            first,
+            last,
+            slot,
+        )
+    else:
+        import_filtered_pbf(config, artifact, inactive_slot(config), cadence, first, last)
     for sequence in range(first, last + 1):
         (config_path(config, "raw_dir") / cadence / f"{sequence:09d}.osc.gz").unlink(
             missing_ok=True
@@ -212,10 +481,16 @@ def recover_filtered_artifact(
 
 
 def apply_full_changes(
-    config: dict[str, Any], changes: list[Path], cadence: str, first: int, last: int
+    config: dict[str, Any], changes: list[Path], cadence: str, first: int, last: int,
+    timestamp: str,
 ) -> None:
     current = config_path(config, "planet_pbf")
     payload = current.resolve() if current.is_symlink() else current
+    next_pbf = payload.with_name(f".{payload.name}.{cadence}-{last}.osm.pbf")
+    if resume_full_pbf_apply(
+        config, cadence, first, last, timestamp, payload, next_pbf
+    ):
+        return
     work_dir = config_path(config, "work_dir")
     work_dir.mkdir(parents=True, exist_ok=True)
     merged = work_dir / f"{cadence}-{first:09d}-{last:09d}.osc.gz"
@@ -237,8 +512,19 @@ def apply_full_changes(
         "merged %s %s files in %.1fs: %s",
         len(changes), cadence, time.monotonic() - merge_started, merged,
     )
-    next_pbf = payload.with_name(f".{payload.name}.{cadence}-{last}.osm.pbf")
     next_pbf.unlink(missing_ok=True)
+    journal_path = config.get("full_pbf_apply_journal_file")
+    journal = {
+        "phase": "applying",
+        "cadence": cadence,
+        "first": first,
+        "last": last,
+        "timestamp": timestamp,
+        "payload": str(payload),
+        "next_pbf": str(next_pbf),
+    }
+    if journal_path:
+        write_json(Path(str(journal_path)), journal)
     started = time.monotonic()
     LOG.info(
         "starting full-PBF apply for %s batch %s through %s: %s",
@@ -257,11 +543,23 @@ def apply_full_changes(
         ],
         check=True,
     )
+    journal["phase"] = "built"
+    journal["target_size_bytes"] = next_pbf.stat().st_size
+    if journal_path:
+        write_json(Path(str(journal_path)), journal)
     # Keep planet-latest.osm.pbf as a stable symlink. Replacing the payload
     # itself removes the previous version instead of leaving a second full
     # Planet file beside the updated one.
     next_pbf.replace(payload)
     record_current_planet_size(config, payload)
+    write_json(
+        config_path(config, "full_pbf_state_file"),
+        {"cadence": cadence, "sequence": last, "timestamp": timestamp},
+    )
+    journal["phase"] = "switched"
+    if journal_path:
+        write_json(Path(str(journal_path)), journal)
+        Path(str(journal_path)).unlink(missing_ok=True)
     LOG.info(
         "full Planet PBF advanced through %s/%s in %.1fs",
         cadence, last,
@@ -270,7 +568,14 @@ def apply_full_changes(
     merged.unlink(missing_ok=True)
 
 
-def import_filtered_pbf(config: dict[str, Any], filtered: Path, slot: str) -> None:
+def import_filtered_pbf(
+    config: dict[str, Any],
+    filtered: Path,
+    slot: str,
+    cadence: str | None = None,
+    first: int | None = None,
+    last: int | None = None,
+) -> None:
     staging = slot_dir(config, slot)
     # The standby API pod shares this PVC. Mark the slot before touching it so
     # its inactive-slot retirement loop cannot remove the directory while
@@ -307,6 +612,17 @@ def import_filtered_pbf(config: dict[str, Any], filtered: Path, slot: str) -> No
                 filtered,
                 time.monotonic() - import_started,
             )
+        if cadence is not None and first is not None and last is not None:
+            write_json(
+                config_path(config, "filtered_import_state_file"),
+                {
+                    "cadence": cadence,
+                    "first": first,
+                    "last": last,
+                    "timestamp": str(config.get("last_change_timestamp", "")),
+                    "slot": slot,
+                },
+            )
         write_marker(config, "ready_slot_file", slot)
         LOG.info("replacement database is ready in slot %s", slot)
     finally:
@@ -324,28 +640,42 @@ def rebuild_filtered(
         "radio tag found in %s batch %s through %s; generating %s",
         cadence, first, last, filtered.name,
     )
-    filter_started = time.monotonic()
-    subprocess.run(
-        [
-            "osmium",
-            "tags-filter",
-            str(config_path(config, "planet_pbf")),
-            f"{prefix}*",
-            "-o",
-            str(filtered),
-            "--progress",
-            "--overwrite",
-            "--verbose",
-        ],
-        check=True,
-    )
-    LOG.info(
-        "radio tags-filter for %s/%s through %s completed in %.1fs",
-        cadence, first, last,
-        time.monotonic() - filter_started,
-    )
+    if (
+        filtered.exists()
+        and full_pbf_state(config)
+        and full_pbf_state(config).get("cadence") == cadence
+        and int(full_pbf_state(config).get("sequence", -1)) >= last
+    ):
+        LOG.info(
+            "reusing existing filtered PBF %s; full Planet PBF already contains "
+            "batch through %s",
+            filtered,
+            last,
+        )
+    else:
+        filtered.unlink(missing_ok=True)
+        filter_started = time.monotonic()
+        subprocess.run(
+            [
+                "osmium",
+                "tags-filter",
+                str(config_path(config, "planet_pbf")),
+                f"{prefix}*",
+                "-o",
+                str(filtered),
+                "--progress",
+                "--overwrite",
+                "--verbose",
+            ],
+            check=True,
+        )
+        LOG.info(
+            "radio tags-filter for %s/%s through %s completed in %.1fs",
+            cadence, first, last,
+            time.monotonic() - filter_started,
+        )
     config["last_change_timestamp"] = timestamp
-    import_filtered_pbf(config, filtered, inactive_slot(config))
+    import_filtered_pbf(config, filtered, inactive_slot(config), cadence, first, last)
 
 
 def download(config: dict[str, Any], cadence: str, sequence: int) -> tuple[Path, dict[str, Any]]:
@@ -416,11 +746,17 @@ def apply_batch(
 ) -> dict[str, Any]:
     last = first + len(batch) - 1
     changes = [item[0] for item in batch]
-    apply_full_changes(config, changes, cadence, first, last)
-    write_json(
-        config_path(config, "full_pbf_state_file"),
-        {"cadence": cadence, "sequence": last, "timestamp": batch[-1][1]["timestamp"]},
-    )
+    timestamp = str(batch[-1][1]["timestamp"])
+    if full_pbf_contains_batch(config, cadence, last):
+        LOG.info(
+            "full Planet PBF already contains %s batch %s through %s; "
+            "skipping duplicate apply",
+            cadence,
+            first,
+            last,
+        )
+    else:
+        apply_full_changes(config, changes, cadence, first, last, timestamp)
     if any(item[2] for item in batch):
         rebuild_filtered(config, cadence, first, last, str(batch[-1][1]["timestamp"]))
     for change, _, _ in batch:
@@ -483,7 +819,10 @@ def run(config: dict[str, Any]) -> None:
         raise RuntimeError("fresh Planet PBF metadata is missing")
     state_path = config_path(config, "state_file")
     state = load_json(state_path, None)
-    if not isinstance(state, dict):
+    new_snapshot = new_planet_snapshot(config)
+    if new_snapshot is not None:
+        state = reset_from_new_planet_snapshot(config, new_snapshot)
+    elif not isinstance(state, dict):
         timestamp = str(metadata["timestamp"])
         state = {
             "cadence": "day",

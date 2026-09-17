@@ -40,10 +40,11 @@ osmium tags-filter "$planet_pbf" "${prefix}*" \
 echo "Initial radio tags-filter completed in $(( $(date +%s) - filter_started ))s"
 
 metadata=$(osmium fileinfo --json --no-crc "$planet_pbf")
+source_file=$(basename "$(readlink -f "$planet_pbf")")
 python -c 'import json, os, sys; x=json.loads(sys.argv[1]); o=x.get("header",{}).get("option",{}); ts=o.get("osmosis_replication_timestamp"); seq=o.get("osmosis_replication_sequence_number");
 assert ts, "Planet PBF has no replication timestamp";
-target=open(sys.argv[3], "w", encoding="utf-8"); json.dump({"source_file":os.path.basename(sys.argv[2]), "timestamp":ts, "replication_sequence":int(seq) if seq is not None else None}, target, indent=2); target.write("\n"); target.close()' \
-    "$metadata" "$planet_pbf" "$state_dir/snapshot-metadata.json"
+target=open(sys.argv[3], "w", encoding="utf-8"); json.dump({"source_file":sys.argv[4], "timestamp":ts, "replication_sequence":int(seq) if seq is not None else None}, target, indent=2); target.write("\n"); target.close()' \
+    "$metadata" "$planet_pbf" "$state_dir/snapshot-metadata.json" "$source_file"
 
 temporary_dir=$(mktemp -d "$filtered_dir/initial-xml.XXXXXX")
 trap 'rm -rf -- "$temporary_dir"' EXIT INT TERM
