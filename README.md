@@ -101,4 +101,8 @@ docker compose config --quiet
 
 Pushing a semantic-version tag runs tests and publishes the replicator image
 to GHCR. The Overpass and replicator images are released together because the
-database cutover protocol is shared between them.
+database cutover protocol is shared between them. The image uses the recent
+prebuilt `wiktorn/overpass-api:v0.7.62.11` binary distribution as a build
+stage, so the osm-3s compiler stage is no longer run for every release. The
+image remains wrapped in this repository's Debian/Apache image so the custom
+cutover entrypoint and Traefik-facing API layout are preserved.

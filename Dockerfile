@@ -1,29 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM debian:bookworm-slim AS overpass-builder
-
-ARG DEBIAN_FRONTEND=noninteractive
-ARG OVERPASS_URL=https://dev.overpass-api.de/releases/osm-3s_latest.tar.gz
-ARG OVERPASS_SHA256=
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       ca-certificates curl make g++ autoconf automake libtool \
-       expat libexpat1-dev zlib1g-dev liblz4-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN mkdir -p /tmp/overpass \
-    && curl --fail --location --retry 3 --retry-delay 5 --output /tmp/overpass.tar.gz "$OVERPASS_URL" \
-    && if [ -n "$OVERPASS_SHA256" ]; then \
-         echo "$OVERPASS_SHA256  /tmp/overpass.tar.gz" | sha256sum --check --status; \
-       fi \
-    && tar -xzf /tmp/overpass.tar.gz --strip-components=1 -C /tmp/overpass \
-    && cd /tmp/overpass \
-    && ./configure --enable-lz4 \
-    && make -j"$(nproc)" \
-    && chmod 755 bin/*.sh cgi-bin/* \
-    && mkdir -p /opt/overpass \
-    && cp -a bin cgi-bin /opt/overpass/
+FROM wiktorn/overpass-api:v0.7.62.11 AS overpass-prebuilt
 
 
 FROM debian:bookworm-slim AS overpass-runtime
@@ -37,7 +14,7 @@ RUN apt-get update \
        libstdc++6 zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=overpass-builder /opt/overpass /opt/overpass
+COPY --from=overpass-prebuilt /app /opt/overpass
 
 
 FROM overpass-runtime AS overpass
@@ -71,7 +48,7 @@ RUN apt-get update \
        aria2 libbz2-1.0 libexpat1 liblz4-1 liblzma5 zlib1g osmium-tool \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=overpass-builder /opt/overpass /opt/overpass
+COPY --from=overpass-prebuilt /app /opt/overpass
 
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt

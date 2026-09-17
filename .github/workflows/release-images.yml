@@ -60,7 +60,6 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       push: ${{ steps.meta.outputs.push }}
       targets: ${{ steps.meta.outputs.targets }}
-      overpass_sha256: ${{ steps.meta.outputs.overpass_sha256 }}
     steps:
       - id: meta
         shell: bash
@@ -72,7 +71,6 @@ jobs:
           INPUT_PUSH: ${{ inputs.push_images }}
           INPUT_TARGET: ${{ inputs.image_target }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}
-          OVERPASS_URL: https://dev.overpass-api.de/releases/osm-3s_latest.tar.gz
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" == release ]]; then
@@ -99,14 +97,11 @@ jobs:
           fi
           version="${raw_version#v}"
           owner=$(printf '%s' "$REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
-          overpass_sha256=$(curl --fail --location --retry 3 --retry-delay 5 \
-            --connect-timeout 120 --silent --show-error "$OVERPASS_URL" | sha256sum | cut -d' ' -f1)
           {
             echo "owner=$owner"
             echo "version=$version"
             echo "push=$push_images"
             echo "targets=$targets"
-            echo "overpass_sha256=$overpass_sha256"
           } >> "$GITHUB_OUTPUT"
 
   images:
@@ -134,8 +129,6 @@ jobs:
           file: Dockerfile
           target: ${{ matrix.target }}
           push: ${{ needs.image-metadata.outputs.push == 'true' }}
-          build-args: |
-            OVERPASS_SHA256=${{ needs.image-metadata.outputs.overpass_sha256 }}
           tags: |
             ghcr.io/${{ needs.image-metadata.outputs.owner }}/overpass-radio-${{ matrix.target }}:${{ needs.image-metadata.outputs.version }}
             ghcr.io/${{ needs.image-metadata.outputs.owner }}/overpass-radio-${{ matrix.target }}:latest
