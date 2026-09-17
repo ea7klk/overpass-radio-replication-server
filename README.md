@@ -9,8 +9,8 @@ and no attic or historical data is requested.
 
 ## Runtime design
 
-The Fleet deployment uses two cooperating Deployments: the public Overpass
-API/dispatcher and one `full-pbf-replication` worker. The worker uses a fresh
+The Fleet deployment uses one blue/green Overpass StatefulSet (two API/
+dispatcher pods) and one `full-pbf-replication` worker Deployment. The worker uses a fresh
 `planet-latest.osm.pbf.torrent`, resumes the PBF download with `aria2c`, and
 keeps that full PBF as its source of truth.
 The replicator image installs the Debian `aria2` package and verifies that
@@ -19,17 +19,22 @@ The replicator image installs the Debian `aria2` package and verifies that
 The worker processes replication in order: daily, hourly, then minutely. Each
 raw `.osc.gz` file is first scanned for a
 `communication:amateur_radio*` tag. Rejected files are logged and deleted.
-Every file is still applied to the full Planet PBF so the source of truth stays
-complete. For accepted files, `osmium tags-filter` creates a new filtered PBF;
+Up to ten contiguous files are prefetched concurrently. The worker waits for
+the one-hour batch window to be due, then merges and applies the batch in one
+full-PBF rewrite, even if the backlog is still growing. Every file is still
+applied to the full Planet PBF so the source of truth stays complete. For
+accepted files, `osmium tags-filter` creates a new filtered PBF;
 that PBF is extracted to XML and imported into an isolated staging Overpass
 database. No external Overpass query is needed: the full Planet PBF is the
 source of truth, and `osmium tags-filter` retains the referenced nodes, ways,
 and relation members needed by each matching object.
 
-When staging is ready, a marker requests a short API cutover. The API stops the
-dispatcher, atomically swaps staging into `live`, verifies a local query, and
-deletes the retired database. Files without matching tags do not trigger a
-filtered rebuild or cutover.
+When a replacement slot is ready, a second Overpass dispatcher/API instance
+serves it and passes a local health check before the active slot marker is
+switched. Traefik's Service then routes only to the healthy active slot, so the
+old API remains available during the handoff. The retired slot is removed only
+after its dispatcher has stopped. Files without matching tags do not trigger a
+filtered rebuild or slot switch.
 
 `osmium tags-filter` retains referenced nodes and relation members by default;
 do not pass `--omit-referenced`/`-R`. The explicit CLI used for the initial
@@ -66,7 +71,7 @@ The five claims in `fleet/overpass-radio/storage.yaml` have separate purposes:
 | `overpass-radio-planet` | Full Planet PBF and torrent, the controlled source of truth |
 | `overpass-radio-raw-changes` | Temporary raw daily/hourly/minute downloads |
 | `overpass-radio-filtered` | Filtered PBF extracts and temporary XML |
-| `overpass-radio-databases` | Live and staging filtered Overpass databases |
+| `overpass-radio-databases` | Blue/green filtered Overpass database slots |
 | `overpass-radio-state` | Replication checkpoints, metadata, work, and cutover markers |
 
 The architecture and storage diagrams are in

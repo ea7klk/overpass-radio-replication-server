@@ -10,6 +10,7 @@ into an isolated staging database and cut over by the Overpass process.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import gzip
 import json
 import logging
@@ -85,18 +86,76 @@ def contains_radio_tag(path: Path, prefix: str) -> bool:
     return False
 
 
-def apply_full_change(config: dict[str, Any], change: Path, sequence: int) -> None:
+def read_marker(config: dict[str, Any], key: str) -> str:
+    path = config.get(key)
+    if not path:
+        return ""
+    try:
+        return Path(str(path)).read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        return ""
+
+
+def write_marker(config: dict[str, Any], key: str, value: str) -> None:
+    path_value = config.get(key)
+    if not path_value:
+        return
+    path = Path(str(path_value))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp-{time.monotonic_ns()}")
+    temporary.write_text(value, encoding="ascii")
+    temporary.replace(path)
+
+
+def inactive_slot(config: dict[str, Any]) -> str:
+    active = read_marker(config, "active_slot_file")
+    if active not in {"blue", "green"}:
+        return "blue"
+    return "green" if active == "blue" else "blue"
+
+
+def slot_dir(config: dict[str, Any], slot: str) -> Path:
+    return config_path(config, "db_root") / slot
+
+
+def apply_full_changes(
+    config: dict[str, Any], changes: list[Path], cadence: str, first: int, last: int
+) -> None:
     current = config_path(config, "planet_pbf")
-    next_pbf = current.with_name(f".planet-{sequence}.osm.pbf")
+    work_dir = config_path(config, "work_dir")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    merged = work_dir / f"{cadence}-{first:09d}-{last:09d}.osc.gz"
+    merged.unlink(missing_ok=True)
+    merge_started = time.monotonic()
+    LOG.info(
+        "merging %s %s replication files (%s through %s)",
+        len(changes), cadence, first, last,
+    )
+    subprocess.run(
+        [
+            "osmium", "merge-changes", "--simplify",
+            *[str(path) for path in changes],
+            "-o", str(merged), "--overwrite", "--progress",
+        ],
+        check=True,
+    )
+    LOG.info(
+        "merged %s %s files in %.1fs: %s",
+        len(changes), cadence, time.monotonic() - merge_started, merged,
+    )
+    next_pbf = current.with_name(f".planet-{cadence}-{last}.osm.pbf")
     next_pbf.unlink(missing_ok=True)
     started = time.monotonic()
-    LOG.info("starting full-PBF apply for sequence %s: %s", sequence, change)
+    LOG.info(
+        "starting full-PBF apply for %s batch %s through %s: %s",
+        cadence, first, last, merged,
+    )
     subprocess.run(
         [
             "osmium",
             "apply-changes",
             str(current),
-            str(change),
+            str(merged),
             "-o",
             str(next_pbf),
             "--overwrite",
@@ -106,14 +165,15 @@ def apply_full_change(config: dict[str, Any], change: Path, sequence: int) -> No
     )
     next_pbf.replace(current)
     LOG.info(
-        "full Planet PBF advanced through sequence %s in %.1fs",
-        sequence,
+        "full Planet PBF advanced through %s/%s in %.1fs",
+        cadence, last,
         time.monotonic() - started,
     )
+    merged.unlink(missing_ok=True)
 
 
-def import_filtered_pbf(config: dict[str, Any], filtered: Path) -> None:
-    staging = config_path(config, "staging_db_dir")
+def import_filtered_pbf(config: dict[str, Any], filtered: Path, slot: str) -> None:
+    staging = slot_dir(config, slot)
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True, exist_ok=True)
@@ -144,14 +204,21 @@ def import_filtered_pbf(config: dict[str, Any], filtered: Path) -> None:
             filtered,
             time.monotonic() - import_started,
         )
+    write_marker(config, "ready_slot_file", slot)
+    LOG.info("replacement database is ready in slot %s", slot)
 
 
-def rebuild_filtered(config: dict[str, Any], change: Path, timestamp: str, sequence: int) -> None:
+def rebuild_filtered(
+    config: dict[str, Any], cadence: str, first: int, last: int, timestamp: str
+) -> None:
     filtered_dir = config_path(config, "filtered_dir")
     filtered_dir.mkdir(parents=True, exist_ok=True)
-    filtered = filtered_dir / f"filtered-{sequence:09d}.osm.pbf"
+    filtered = filtered_dir / f"filtered-{cadence}-{first:09d}-{last:09d}.osm.pbf"
     prefix = str(config["tag_key_prefix"])
-    LOG.info("radio tag found in %s; generating %s", change.name, filtered.name)
+    LOG.info(
+        "radio tag found in %s batch %s through %s; generating %s",
+        cadence, first, last, filtered.name,
+    )
     filter_started = time.monotonic()
     subprocess.run(
         [
@@ -168,15 +235,12 @@ def rebuild_filtered(config: dict[str, Any], change: Path, timestamp: str, seque
         check=True,
     )
     LOG.info(
-        "radio tags-filter for sequence %s completed in %.1fs",
-        sequence,
+        "radio tags-filter for %s/%s through %s completed in %.1fs",
+        cadence, first, last,
         time.monotonic() - filter_started,
     )
     config["last_change_timestamp"] = timestamp
-    import_filtered_pbf(config, filtered)
-    marker = config_path(config, "staging_ready_file")
-    marker.write_text(f"{sequence}\n", encoding="ascii")
-    LOG.info("staging database ready through %s", sequence)
+    import_filtered_pbf(config, filtered, inactive_slot(config))
 
 
 def download(config: dict[str, Any], cadence: str, sequence: int) -> tuple[Path, dict[str, Any]]:
@@ -219,8 +283,7 @@ def download(config: dict[str, Any], cadence: str, sequence: int) -> tuple[Path,
             wait = min(maximum, max(wait * 2, 1))
 
 
-def apply_one(config: dict[str, Any], cadence: str, sequence: int) -> dict[str, Any]:
-    change, state = download(config, cadence, sequence)
+def prefilter(config: dict[str, Any], cadence: str, sequence: int, change: Path) -> bool:
     has_tag = contains_radio_tag(change, str(config["tag_key_prefix"]))
     LOG.info(
         "%s %s %s tag prefilter: %s",
@@ -230,44 +293,74 @@ def apply_one(config: dict[str, Any], cadence: str, sequence: int) -> dict[str, 
         "matching communication:amateur_radio*" if has_tag else "no matching tag",
     )
     if has_tag:
-        marker_path = config.get("accepted_prefilter_marker_file")
-        if marker_path:
-            marker = Path(str(marker_path))
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.write_text(
+        marker = config.get("accepted_prefilter_marker_file")
+        if marker:
+            marker_path = Path(str(marker))
+            marker_path.parent.mkdir(parents=True, exist_ok=True)
+            marker_path.write_text(
                 f"{cadence}/{sequence} accepted tag prefilter: "
                 "matching communication:amateur_radio*\n",
                 encoding="utf-8",
             )
-            LOG.info("accepted prefilter marker written: %s", marker)
-    full_pbf_state = load_json(config_path(config, "full_pbf_state_file"), {})
-    already_applied = (
-        isinstance(full_pbf_state, dict)
-        and full_pbf_state.get("cadence") == cadence
-        and int(full_pbf_state.get("sequence", -1)) == sequence
+            LOG.info("accepted prefilter marker written: %s", marker_path)
+    return has_tag
+
+
+def apply_batch(
+    config: dict[str, Any], cadence: str, first: int, batch: list[tuple[Path, dict[str, Any], bool]]
+) -> dict[str, Any]:
+    last = first + len(batch) - 1
+    changes = [item[0] for item in batch]
+    apply_full_changes(config, changes, cadence, first, last)
+    write_json(
+        config_path(config, "full_pbf_state_file"),
+        {"cadence": cadence, "sequence": last, "timestamp": batch[-1][1]["timestamp"]},
     )
-    if already_applied:
+    if any(item[2] for item in batch):
+        rebuild_filtered(config, cadence, first, last, str(batch[-1][1]["timestamp"]))
+    for change, _, _ in batch:
+        change.unlink(missing_ok=True)
+    return batch[-1][1]
+
+
+def download_until_caught_up(
+    config: dict[str, Any], cadence: str, first: int, retry: int, maximum: int,
+    due_at: float,
+) -> list[tuple[Path, dict[str, Any], bool]]:
+    batch: list[tuple[Path, dict[str, Any], bool]] = []
+    sequence = first
+    target = int(common.latest(cadence_base(config, cadence), retry, maximum)["sequence"])
+    prefetch = max(1, int(config.get("prefetch_files", 10)))
+    while sequence <= target and time.time() < due_at:
+        window_end = min(sequence + prefetch - 1, target)
+        window = list(range(sequence, window_end + 1))
         LOG.info(
-            "full Planet PBF already contains %s/%s; resuming filtering/import",
-            cadence,
-            sequence,
+            "prefetching %s %s update files (%s through %s)",
+            len(window), cadence, sequence, window_end,
         )
-    else:
-        apply_full_change(config, change, sequence)
-        write_json(
-            config_path(config, "full_pbf_state_file"),
-            {"cadence": cadence, "sequence": sequence, "timestamp": state["timestamp"]},
+        with ThreadPoolExecutor(
+            max_workers=len(window), thread_name_prefix="download"
+        ) as executor:
+            downloaded = list(
+                executor.map(lambda value: download(config, cadence, value), window)
+            )
+        for value, (change, state) in zip(window, downloaded):
+            batch.append((change, state, prefilter(config, cadence, value, change)))
+        sequence = window_end + 1
+        target = max(
+            target,
+            int(common.latest(cadence_base(config, cadence), retry, maximum)["sequence"]),
         )
-    if has_tag:
-        rebuild_filtered(config, change, str(state["timestamp"]), sequence)
-        cutover = config_path(config, "cutover_requested_file")
-        cutover.parent.mkdir(parents=True, exist_ok=True)
-        Path(config["cutover_complete_file"]).unlink(missing_ok=True)
-        cutover.write_text(
-            f"filtered staging ready for {cadence}/{sequence}\n", encoding="utf-8"
-        )
-    change.unlink(missing_ok=True)
-    return state
+    while batch and time.time() < due_at and sequence > target:
+        time.sleep(min(5, max(0.1, due_at - time.time())))
+        target = int(common.latest(cadence_base(config, cadence), retry, maximum)["sequence"])
+        if sequence <= target:
+            break
+    LOG.info(
+        "%s batch window reached at %s; applying %s file(s), backlog target is %s",
+        cadence, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), len(batch), target,
+    )
+    return batch
 
 
 def run(config: dict[str, Any]) -> None:
@@ -286,19 +379,22 @@ def run(config: dict[str, Any]) -> None:
         write_json(state_path, state)
         LOG.info("starting raw global replication after fresh PBF boundary %s", timestamp)
     while True:
-        cutover = config_path(config, "cutover_requested_file")
-        if cutover.exists():
-            LOG.info("waiting for Overpass server to complete staged database cutover")
-            while cutover.exists():
-                time.sleep(2)
-            LOG.info("staged database cutover completed; replication resumed")
         cadence = str(state["cadence"])
         retry, maximum = retry_values(config)
         target = int(common.latest(cadence_base(config, cadence), retry, maximum)["sequence"])
         next_sequence = int(state["sequence"]) + 1
         if next_sequence <= target:
-            state = apply_one(config, cadence, next_sequence)
+            last_applied = float(state.get("last_batch_applied_at", 0))
+            due_at = max(
+                time.time(),
+                last_applied + float(config.get("batch_interval_seconds", 3600)),
+            )
+            batch = download_until_caught_up(
+                config, cadence, next_sequence, retry, maximum, due_at
+            )
+            state = apply_batch(config, cadence, next_sequence, batch)
             state["cadence"] = cadence
+            state["last_batch_applied_at"] = time.time()
             write_json(state_path, state)
             continue
         index = CADENCES.index(cadence)

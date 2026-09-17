@@ -1,21 +1,23 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: overpass-radio-overpass
   namespace: overpass-radio
   labels:
-    app.kubernetes.io/name: overpass-radio-overpass
+    app.kubernetes.io/name: overpass-radio-api
 spec:
-  replicas: 1
-  strategy:
-    type: Recreate
+  serviceName: overpass
+  replicas: 2
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: OnDelete
   selector:
     matchLabels:
-      app.kubernetes.io/name: overpass-radio-overpass
+      app.kubernetes.io/name: overpass-radio-api
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: overpass-radio-overpass
+        app.kubernetes.io/name: overpass-radio-api
     spec:
       automountServiceAccountToken: false
       imagePullSecrets:
@@ -24,25 +26,19 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       containers:
       - name: overpass
-        image: ghcr.io/ea7klk/overpass-radio-overpass:0.1.3
+        image: ghcr.io/ea7klk/overpass-radio-overpass:0.1.5
         imagePullPolicy: IfNotPresent
         env:
         - name: ALLOWED_ORIGINS
           value: ""
         - name: OVERPASS_DB_ROOT
           value: /srv/overpass-radio/db
-        - name: OVERPASS_LIVE_DB_DIR
-          value: /srv/overpass-radio/db/live
-        - name: OVERPASS_STAGING_DB_DIR
-          value: /srv/overpass-radio/db/staging
         - name: OVERPASS_STATE_DIR
           value: /srv/overpass-radio/state
-        - name: OVERPASS_STAGING_READY_FILE
-          value: /srv/overpass-radio/state/staging-ready
-        - name: OVERPASS_CUTOVER_REQUESTED_FILE
-          value: /srv/overpass-radio/state/cutover-requested
-        - name: OVERPASS_CUTOVER_COMPLETE_FILE
-          value: /srv/overpass-radio/state/cutover-complete
+        - name: OVERPASS_READY_SLOT_FILE
+          value: /srv/overpass-radio/state/ready-slot
+        - name: OVERPASS_ACTIVE_SLOT_FILE
+          value: /srv/overpass-radio/state/active-slot
         ports:
         - name: http
           containerPort: 80
@@ -53,10 +49,10 @@ spec:
             - /bin/sh
             - -c
             - >-
-              curl --noproxy '*' --fail --silent --get
-              http://127.0.0.1/api/interpreter
-              --data-urlencode 'data=[out:json];node(1);out;' |
-              grep -q '"version"'
+              slot=blue; case "$(cat /etc/hostname)" in *-1) slot=green;; esac;
+              test "$(cat /srv/overpass-radio/state/active-slot 2>/dev/null)" = "$slot" &&
+              curl --noproxy '*' --fail --silent --get http://127.0.0.1/api/interpreter
+              --data-urlencode 'data=[out:json];node(1);out;' | grep -q '"version"'
           periodSeconds: 10
           timeoutSeconds: 10
           failureThreshold: 6
@@ -138,14 +134,14 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
       - name: download-fresh-planet
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.3
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.5
         imagePullPolicy: IfNotPresent
         command: [/usr/local/bin/radio-overpass-planet-bootstrap]
         volumeMounts:
         - name: planet
           mountPath: /srv/planet
       - name: initialize-filtered-staging
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.3
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.5
         imagePullPolicy: IfNotPresent
         command: [/usr/local/bin/radio-overpass-initial-staging]
         env:
@@ -154,7 +150,9 @@ spec:
         - name: FILTERED_DIR
           value: /srv/filtered
         - name: STAGING_DB_DIR
-          value: /srv/db/staging
+          value: /srv/db/blue
+        - name: INITIAL_SLOT
+          value: blue
         - name: STATE_DIR
           value: /srv/state
         - name: TAG_KEY_PREFIX
@@ -170,7 +168,7 @@ spec:
           mountPath: /srv/state
       containers:
       - name: full-pbf-replication
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.3
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.5
         imagePullPolicy: IfNotPresent
         command: [/usr/local/bin/radio-overpass-full-pbf-entrypoint]
         env:
@@ -222,11 +220,11 @@ metadata:
   name: overpass
   namespace: overpass-radio
   labels:
-    app.kubernetes.io/name: overpass-radio-overpass
+    app.kubernetes.io/name: overpass-radio-api
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: overpass-radio-overpass
+    app.kubernetes.io/name: overpass-radio-api
   ports:
   - name: http
     port: 80

@@ -6,7 +6,7 @@ skinparam componentStyle rectangle
 database "overpass-radio-planet\n220Gi\nfull Planet PBF + torrent" as planet
 database "overpass-radio-raw-changes\n50Gi\nraw replication downloads" as raw
 database "overpass-radio-filtered\n25Gi\nfiltered PBF extracts" as filtered
-database "overpass-radio-databases\n100Gi\nlive + staging + retired DB" as db
+database "overpass-radio-databases\n100Gi\nblue + green Overpass DB slots" as db
 database "overpass-radio-state\n5Gi\ncheckpoints, markers, work" as state
 
 component "Planet bootstrap" as bootstrap
@@ -19,6 +19,6 @@ worker --> raw : download / discard
 worker --> filtered : tags-filter
 worker --> db : staging import
 worker --> state : checkpoints
-api --> db : live database
-api --> state : cutover markers
+api --> db : active slot
+api --> state : active/ready slot markers
 @enduml

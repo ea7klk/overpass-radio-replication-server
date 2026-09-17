@@ -57,7 +57,7 @@ metadata:
   labels:
     app.kubernetes.io/component: overpass-databases
   annotations:
-    overpass.spainip.es/purpose: live-and-staging-filtered-overpass-databases
+    overpass.spainip.es/purpose: blue-green-filtered-overpass-databases
 spec:
   accessModes: [ReadWriteOnce]
   resources:

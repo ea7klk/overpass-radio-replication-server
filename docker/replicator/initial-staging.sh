@@ -3,17 +3,26 @@ set -euo pipefail
 
 planet_pbf="${PLANET_PBF:-/srv/planet/planet-latest.osm.pbf}"
 filtered_dir="${FILTERED_DIR:-/srv/filtered}"
-staging_db="${STAGING_DB_DIR:-/srv/db/staging}"
+staging_db="${STAGING_DB_DIR:-/srv/db/${INITIAL_SLOT:-blue}}"
 state_dir="${STATE_DIR:-/srv/state}"
 prefix="${TAG_KEY_PREFIX:-communication:amateur_radio}"
+initial_slot="${INITIAL_SLOT:-blue}"
+initial_complete_file="$state_dir/initial-staging-complete"
+ready_slot_file="$state_dir/ready-slot"
+active_slot_file="$state_dir/active-slot"
 
 test -s "$planet_pbf"
 mkdir -p "$filtered_dir" "$state_dir"
+if [[ -f "$initial_complete_file" && -f "$staging_db/nodes.map" ]]; then
+    echo "Initial staging already complete in slot $initial_slot; skipping rebuild"
+    exit 0
+fi
 rm -rf -- "$staging_db"
 mkdir -p "$staging_db"
 rm -f "$state_dir/staging-ready" "$state_dir/cutover-requested" \
     "$state_dir/cutover-complete" "$state_dir/replication-state.json" \
     "$state_dir/full-pbf-state.json"
+rm -f "$initial_complete_file" "$ready_slot_file" "$active_slot_file"
 
 filter_started=$(date +%s)
 echo "Generating the initial filtered PBF from the fresh Planet file"
@@ -41,5 +50,7 @@ python -m radio_overpass.import_xml \
     --every 5000
 echo "Initial staging Overpass import completed in $(( $(date +%s) - import_started ))s"
 test -f "$staging_db/nodes.map"
-printf 'initial filtered staging database ready\n' > "$state_dir/staging-ready"
+printf '%s\n' "$initial_slot" > "$active_slot_file"
+printf '%s\n' "$initial_slot" > "$ready_slot_file"
+printf 'initial filtered staging database ready in slot %s\n' "$initial_slot" > "$initial_complete_file"
 echo "Initial filtered staging database is ready; no external closure query was performed"

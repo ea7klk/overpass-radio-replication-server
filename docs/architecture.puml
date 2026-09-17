@@ -25,24 +25,26 @@ partition "Initial staging" {
 }
 
 partition "Ordered replication" {
-  :Download raw daily changes;
+  :Prefetch up to 10 raw changes;
   :Discard files without
   communication:amateur_radio*;
-  :osmium apply-changes
+  :Wait for the one-hour batch window;
+  :osmium merge-changes;
+  :osmium apply-changes once
   to the full Planet PBF;
   if (Matching tag found?) then (yes)
     :osmium tags-filter full PBF;
     :Import filtered PBF into staging DB;
-    :Request database cutover;
+    :Import filtered PBF into inactive blue/green slot;
+    :Health-check replacement API;
+    :Switch active Service endpoint;
   else (no)
     :Advance full-PBF checkpoint;
   endif
   :Repeat in order: daily, hourly, minute;
 }
 
-:Stop dispatcher briefly;
-:Atomically replace live DB with staging DB;
-:Start dispatcher and verify API;
-:Delete retired DB after health check;
+:Keep current dispatcher serving during replacement health check;
+:Retire previous slot only after endpoint switch;
 stop
 @enduml
