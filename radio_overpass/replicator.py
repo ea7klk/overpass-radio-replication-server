@@ -1025,6 +1025,7 @@ def download_change(
     sequence: int,
     destination: Path,
 ) -> DownloadedChange:
+    destination.parent.mkdir(parents=True, exist_ok=True)
     base_key = "daily" if cadence == "day" else cadence
     base = config[f"{base_key}_base_url"]
     state = fetch_state(
