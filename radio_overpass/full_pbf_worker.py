@@ -107,6 +107,13 @@ def write_marker(config: dict[str, Any], key: str, value: str) -> None:
     temporary.replace(path)
 
 
+def clear_marker(config: dict[str, Any], key: str) -> None:
+    path_value = config.get(key)
+    if not path_value:
+        return
+    Path(str(path_value)).unlink(missing_ok=True)
+
+
 def record_current_planet_size(config: dict[str, Any], payload: Path) -> None:
     metadata_path = config.get("planet_metadata_file")
     if not metadata_path:
@@ -190,38 +197,45 @@ def apply_full_changes(
 
 def import_filtered_pbf(config: dict[str, Any], filtered: Path, slot: str) -> None:
     staging = slot_dir(config, slot)
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix="filtered-xml-", dir=str(config_path(config, "filtered_dir"))
-    ) as directory:
-        xml = Path(directory) / "filtered.osm"
-        extraction_started = time.monotonic()
-        subprocess.run(
-            ["osmium", "cat", str(filtered), "-o", str(xml), "--overwrite", "--progress"],
-            check=True,
-        )
-        LOG.info(
-            "extracted filtered PBF %s to XML in %.1fs",
-            filtered,
-            time.monotonic() - extraction_started,
-        )
-        import_started = time.monotonic()
-        LOG.info("starting staging Overpass import for %s", filtered)
-        common.update_database(
-            {**config, "db_dir": str(staging)},
-            xml,
-            str(config.get("last_change_timestamp", "")),
-            description=f"filtered PBF {filtered.name}",
-        )
-        LOG.info(
-            "staging Overpass import for %s completed in %.1fs",
-            filtered,
-            time.monotonic() - import_started,
-        )
-    write_marker(config, "ready_slot_file", slot)
-    LOG.info("replacement database is ready in slot %s", slot)
+    # The standby API pod shares this PVC. Mark the slot before touching it so
+    # its inactive-slot retirement loop cannot remove the directory while
+    # update_database is still creating the database files.
+    write_marker(config, "building_slot_file", slot)
+    try:
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix="filtered-xml-", dir=str(config_path(config, "filtered_dir"))
+        ) as directory:
+            xml = Path(directory) / "filtered.osm"
+            extraction_started = time.monotonic()
+            subprocess.run(
+                ["osmium", "cat", str(filtered), "-o", str(xml), "--overwrite", "--progress"],
+                check=True,
+            )
+            LOG.info(
+                "extracted filtered PBF %s to XML in %.1fs",
+                filtered,
+                time.monotonic() - extraction_started,
+            )
+            import_started = time.monotonic()
+            LOG.info("starting staging Overpass import for %s", filtered)
+            common.update_database(
+                {**config, "db_dir": str(staging)},
+                xml,
+                str(config.get("last_change_timestamp", "")),
+                description=f"filtered PBF {filtered.name}",
+            )
+            LOG.info(
+                "staging Overpass import for %s completed in %.1fs",
+                filtered,
+                time.monotonic() - import_started,
+            )
+        write_marker(config, "ready_slot_file", slot)
+        LOG.info("replacement database is ready in slot %s", slot)
+    finally:
+        clear_marker(config, "building_slot_file")
 
 
 def rebuild_filtered(

@@ -5,6 +5,7 @@ db_root="${OVERPASS_DB_ROOT:-/srv/overpass-radio/db}"
 state_dir="${OVERPASS_STATE_DIR:-/srv/overpass-radio/state}"
 ready_slot_file="${OVERPASS_READY_SLOT_FILE:-$state_dir/ready-slot}"
 active_slot_file="${OVERPASS_ACTIVE_SLOT_FILE:-$state_dir/active-slot}"
+building_slot_file="${OVERPASS_BUILDING_SLOT_FILE:-$state_dir/building-slot}"
 
 slot="${OVERPASS_SLOT:-}"
 if [[ -z "$slot" ]]; then
@@ -76,6 +77,17 @@ active_slot() {
     [[ -f "$active_slot_file" ]] && tr -d '[:space:]' < "$active_slot_file" || true
 }
 
+building_slot() {
+    [[ -f "$building_slot_file" ]] && tr -d '[:space:]' < "$building_slot_file" || true
+}
+
+slot_is_servable() {
+    [[ "$db_dir" == "$db_root/live" ]] && return 0
+    active_slot="$(active_slot)"
+    [[ "$active_slot" == "$slot" ]] && return 0
+    [[ "$(tr -d '[:space:]' < "$ready_slot_file" 2>/dev/null || true)" == "$slot" ]]
+}
+
 activate_if_ready() {
     [[ -f "$ready_slot_file" ]] || return 0
     [[ "$(tr -d '[:space:]' < "$ready_slot_file")" == "$slot" ]] || return 0
@@ -90,6 +102,9 @@ activate_if_ready() {
 retire_if_inactive() {
     active="$(active_slot)"
     [[ -n "$active" && "$active" != "$slot" ]] || return 0
+    # A replacement import owns this slot until it publishes ready-slot.
+    # Never remove a directory that update_database may still be writing.
+    [[ "$(building_slot)" == "$slot" ]] && return 0
     if [[ -f "$ready_slot_file" ]] &&
         [[ "$(tr -d '[:space:]' < "$ready_slot_file")" == "$slot" ]]; then
         return 0
@@ -112,7 +127,7 @@ cleanup() {
 }
 trap cleanup TERM INT EXIT
 
-if [[ -f "$db_dir/nodes.map" ]]; then
+if [[ -f "$db_dir/nodes.map" ]] && slot_is_servable; then
     start_dispatcher
     start_apache
 else
@@ -121,7 +136,7 @@ fi
 
 while true; do
     retire_if_inactive
-    if [[ -z "$apache_pid" && -f "$db_dir/nodes.map" ]]; then
+    if [[ -z "$apache_pid" && -f "$db_dir/nodes.map" ]] && slot_is_servable; then
         start_dispatcher
         start_apache
     fi

@@ -40,6 +40,13 @@ database. No external Overpass query is needed: the full Planet PBF is the
 source of truth, and `osmium tags-filter` retains the referenced nodes, ways,
 and relation members needed by each matching object.
 
+The replication worker writes a shared `building-slot` marker before
+replacing the inactive database. The standby API honors this marker and does
+not start or retire that slot until the import has published `ready-slot`.
+This prevents the API process from deleting a partially initialized database
+while Overpass `update_database` is still writing files such as
+`nodes.bin`.
+
 When a replacement slot is ready, a second Overpass dispatcher/API instance
 serves it and passes a local health check before the active slot marker is
 switched. Traefik's Service then routes only to the healthy active slot, so the

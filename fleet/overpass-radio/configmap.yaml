@@ -20,6 +20,7 @@ data:
       "accepted_prefilter_marker_file": "/srv/overpass-radio/state/accepted-prefilter",
       "active_slot_file": "/srv/overpass-radio/state/active-slot",
       "ready_slot_file": "/srv/overpass-radio/state/ready-slot",
+      "building_slot_file": "/srv/overpass-radio/state/building-slot",
       "initial_staging_complete_file": "/srv/overpass-radio/state/initial-staging-complete",
       "overpass_update_from_dir": "/opt/overpass/bin/update_from_dir",
       "overpass_update_database": "/opt/overpass/bin/update_database",
