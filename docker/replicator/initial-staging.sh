@@ -10,11 +10,19 @@ initial_slot="${INITIAL_SLOT:-blue}"
 initial_complete_file="$state_dir/initial-staging-complete"
 ready_slot_file="$state_dir/ready-slot"
 active_slot_file="$state_dir/active-slot"
+legacy_db="${LEGACY_DB_DIR:-/srv/db/live}"
 
 test -s "$planet_pbf"
 mkdir -p "$filtered_dir" "$state_dir"
 if [[ -f "$initial_complete_file" && -f "$staging_db/nodes.map" ]]; then
     echo "Initial staging already complete in slot $initial_slot; skipping rebuild"
+    exit 0
+fi
+if [[ -f "$legacy_db/nodes.map" ]]; then
+    echo "Reusing existing live database as initial $initial_slot slot; skipping rebuild"
+    printf '%s\n' "$initial_slot" > "$active_slot_file"
+    printf '%s\n' "$initial_slot" > "$ready_slot_file"
+    printf 'initial filtered staging database ready in slot %s (reused live database)\n' "$initial_slot" > "$initial_complete_file"
     exit 0
 fi
 rm -rf -- "$staging_db"

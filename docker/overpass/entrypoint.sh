@@ -19,6 +19,10 @@ case "$slot" in
     *) printf 'Invalid Overpass slot: %s\n' "$slot" >&2; exit 2 ;;
 esac
 db_dir="$db_root/$slot"
+if [[ "$slot" == blue && ! -f "$db_dir/nodes.map" && -f "$db_root/live/nodes.map" ]]; then
+    db_dir="$db_root/live"
+    printf 'Using legacy live database as the initial blue slot\n'
+fi
 
 mkdir -p "$db_root" "$state_dir" /srv/overpass-radio/work
 sed -i "s#__OVERPASS_DB_DIR__#${db_dir}#g" /etc/apache2/conf-enabled/overpass-radio.conf
