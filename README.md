@@ -18,10 +18,9 @@ raw `.osc.gz` file is first scanned for a
 Every file is still applied to the full Planet PBF so the source of truth stays
 complete. For accepted files, `osmium tags-filter` creates a new filtered PBF;
 that PBF is extracted to XML and imported into an isolated staging Overpass
-database. Newly changed matching roots are also queried against the configured
-external Overpass endpoints for dependencies and dependents. Successful
-results are applied immediately. Failed queries remain retryable and do not
-advance the corresponding checkpoint.
+database. No external Overpass query is needed: the full Planet PBF is the
+source of truth, and `osmium tags-filter` retains the referenced nodes, ways,
+and relation members needed by each matching object.
 
 When staging is ready, a marker requests a short API cutover. The API stops the
 dispatcher, atomically swaps staging into `live`, verifies a local query, and
@@ -46,7 +45,7 @@ The init containers and worker log elapsed seconds for:
 - `osmium tags-filter` filtering;
 - filtered PBF to XML extraction;
 - staging Overpass database import; and
-- replication downloads, full-PBF `osmium apply-changes`, and external queries.
+- replication downloads and full-PBF `osmium apply-changes`.
 
 Initial and staging imports additionally log every 5,000 OSM objects received,
 followed by a final object count. Typical messages include

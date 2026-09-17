@@ -10,7 +10,6 @@ into an isolated staging database and cut over by the Overpass process.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 import gzip
 import json
 import logging
@@ -22,14 +21,11 @@ import tempfile
 import time
 from typing import Any
 
-from lxml import etree as ET
-
 from . import replicator as common
 
 
 LOG = logging.getLogger("radio-overpass.full-pbf")
 CADENCES = ("day", "hour", "minute")
-OBJECT_TYPES = ("node", "way", "relation")
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -87,27 +83,6 @@ def contains_radio_tag(path: Path, prefix: str) -> bool:
                 return True
             overlap = data[-512:]
     return False
-
-
-def changed_radio_roots(path: Path, prefix: str) -> list[str]:
-    roots: set[str] = set()
-    with gzip.open(path, "rb") as source:
-        for _, element in ET.iterparse(
-            source,
-            events=("end",),
-            tag=OBJECT_TYPES,
-            huge_tree=True,
-            resolve_entities=False,
-            load_dtd=False,
-            no_network=True,
-        ):
-            if any(
-                child.tag == "tag" and (child.get("k") or "").startswith(prefix)
-                for child in element
-            ):
-                roots.add(f"{element.tag}:{element.get('id')}")
-            element.clear()
-    return sorted(roots)
 
 
 def apply_full_change(config: dict[str, Any], change: Path, sequence: int) -> None:
@@ -171,51 +146,6 @@ def import_filtered_pbf(config: dict[str, Any], filtered: Path) -> None:
         )
 
 
-def refresh_dependents(config: dict[str, Any], change: Path, timestamp: str) -> None:
-    roots = changed_radio_roots(change, str(config["tag_key_prefix"]))
-    if not roots:
-        return
-    workers = max(1, min(len(roots), int(config.get("dependency_query_workers", 4))))
-    work = config_path(config, "work_dir") / "external" / change.stem
-    work.mkdir(parents=True, exist_ok=True)
-    LOG.info("querying external dependencies/dependents for %d changed root(s)", len(roots))
-
-    def query(root: str) -> common.RemoteRefresh:
-        kind, object_id = common.root_key_parts(root)
-        root_dir = work / f"{kind}-{object_id}"
-        root_dir.mkdir(parents=True, exist_ok=True)
-        return common.query_overpass(
-            config,
-            root,
-            set(),
-            root_dir / "remote.osc",
-        )
-
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        refreshes = list(executor.map(query, roots))
-    staging_config = {
-        **config,
-        "db_dir": str(config_path(config, "staging_db_dir")),
-        "log_import_progress": True,
-        "import_progress_every": 5000,
-    }
-    for root, refresh in zip(roots, refreshes):
-        if refresh.path is None:
-            continue
-        started = time.monotonic()
-        common.update_database(
-            staging_config,
-            refresh.path,
-            timestamp,
-            description=f"external closure for {root}",
-        )
-        LOG.info(
-            "external closure Overpass import for %s completed in %.1fs",
-            root,
-            time.monotonic() - started,
-        )
-
-
 def rebuild_filtered(config: dict[str, Any], change: Path, timestamp: str, sequence: int) -> None:
     filtered_dir = config_path(config, "filtered_dir")
     filtered_dir.mkdir(parents=True, exist_ok=True)
@@ -244,7 +174,6 @@ def rebuild_filtered(config: dict[str, Any], change: Path, timestamp: str, seque
     )
     config["last_change_timestamp"] = timestamp
     import_filtered_pbf(config, filtered)
-    refresh_dependents(config, change, timestamp)
     marker = config_path(config, "staging_ready_file")
     marker.write_text(f"{sequence}\n", encoding="ascii")
     LOG.info("staging database ready through %s", sequence)

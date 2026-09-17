@@ -33,9 +33,6 @@ partition "Ordered replication" {
   if (Matching tag found?) then (yes)
     :osmium tags-filter full PBF;
     :Import filtered PBF into staging DB;
-    :Fetch dependencies/dependents
-    from external Overpass;
-    :Apply successful external results;
     :Request database cutover;
   else (no)
     :Advance full-PBF checkpoint;
