@@ -28,14 +28,10 @@ atomically moved into place only after completion. The old PBF is removed
 after the replacement is ready. Metadata is refreshed after every local
 Pyosmium update so a changed file is not downloaded again unnecessarily.
 
-Each run then catches the full PBF up to the current state using Pyosmium
-4.3.1:
+Each run then catches the full PBF up to the current state using only the
+minutely replication service and Pyosmium 4.3.1:
 
 ```bash
-pyosmium-up-to-date -vvv \
-  --server https://planet.osm.org/replication/hour \
-  /srv/overpass-radio/planet/planet.osm.pbf
-
 pyosmium-up-to-date -vvv \
   --server https://planet.osm.org/replication/minute \
   --ignore-osmosis-headers \
@@ -43,13 +39,14 @@ pyosmium-up-to-date -vvv \
 ```
 
 If Pyosmium returns `1` because more changes remain than fit in one batch, the
-CronJob repeats that cadence until the server is caught up. Pyosmium stores
+CronJob repeats the command until the server is caught up. Pyosmium stores
 replication metadata in the PBF, allowing the next run to resume from the
-correct position. The minute command explicitly overrides the embedded hourly
-replication URL because the same PBF is intentionally advanced across those
-two replication services in one run.
+correct position. The explicit header override is used only for the initial
+handoff when the snapshot header does not yet identify the minute service;
+after that, the minute replication metadata written by Pyosmium is reused
+directly without rescanning the full Planet file.
 
-After both replication sources are current, the job creates a fresh extract:
+After minutely replication is current, the job creates a fresh extract:
 
 ```bash
 osmium tags-filter planet.osm.pbf \
@@ -81,7 +78,7 @@ and dispatcher stale-socket cleanup remains enabled.
 The CronJob logs elapsed time and progress for:
 
 - torrent/PBF download and replacement;
-- hourly and minutely Pyosmium catch-up;
+- minutely Pyosmium catch-up;
 - full-planet tag filtering;
 - PBF-to-XML extraction; and
 - staging Overpass database import, including progress every 5,000 OSM

@@ -2,8 +2,8 @@
 """Refresh the full Planet PBF and rebuild the filtered Overpass database.
 
 This process is run by a Kubernetes CronJob. The full Planet PBF is the only
-source of truth: pyosmium first catches it up through the hourly and minutely
-replication services, then osmium creates the current radio-tagged extract.
+source of truth: pyosmium catches it up directly through the minutely
+replication service, then osmium creates the current radio-tagged extract.
 The extract is imported into the inactive blue/green database slot and the
 Overpass pods perform the existing readiness-gated cutover.
 """
@@ -86,6 +86,19 @@ def update_planet_metadata(config: dict[str, Any]) -> dict[str, Any]:
         metadata["current_size_bytes"],
     )
     return metadata
+
+
+def planet_replication_source(config: dict[str, Any]) -> str:
+    """Read the small replication URL header without scanning Planet objects."""
+    planet = path(config, "planet_pbf")
+    info = json.loads(
+        subprocess.check_output(
+            ["osmium", "fileinfo", "--json", "--no-crc", str(planet)],
+            text=True,
+        )
+    )
+    options = info.get("header", {}).get("option", {})
+    return str(options.get("osmosis_replication_base_url", "")).rstrip("/")
 
 
 def run_until_current(
@@ -188,14 +201,22 @@ def run(config: dict[str, Any]) -> None:
     if not planet.is_file() or planet.stat().st_size == 0:
         raise RuntimeError(f"Planet PBF is missing: {planet}")
 
-    run_until_current(config, str(config["hour_base_url"]))
-    # The hourly command leaves its replication URL in the PBF header. The
-    # minute service is the intended next cadence, but Pyosmium requires an
-    # explicit override when switching replication servers in one run.
+    # The full Planet PBF is the starting snapshot. Update it directly from
+    # the minute service; the snapshot header may name the hourly service, so
+    # explicitly allow the intended minute-service handoff.
+    minute_server = str(config["minute_base_url"])
+    embedded_source = planet_replication_source(config)
+    ignore_headers = embedded_source != minute_server.rstrip("/")
+    if ignore_headers:
+        LOG.info(
+            "Planet PBF header points to %s; switching to minute replication "
+            "with --ignore-osmosis-headers for this initial handoff",
+            embedded_source or "no replication service",
+        )
     run_until_current(
         config,
-        str(config["minute_base_url"]),
-        ignore_osmosis_headers=True,
+        minute_server,
+        ignore_osmosis_headers=ignore_headers,
     )
     metadata = update_planet_metadata(config)
     filtered = extract_filtered(config)

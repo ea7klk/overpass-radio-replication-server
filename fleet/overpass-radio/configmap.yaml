@@ -20,7 +20,6 @@ data:
       "building_slot_file": "/srv/overpass-radio/state/building-slot",
       "overpass_update_from_dir": "/opt/overpass/bin/update_from_dir",
       "overpass_update_database": "/opt/overpass/bin/update_database",
-      "hour_base_url": "https://planet.openstreetmap.org/replication/hour/",
       "minute_base_url": "https://planet.openstreetmap.org/replication/minute/",
       "cutover_timeout_seconds": 1800,
       "retry_seconds": 15,
