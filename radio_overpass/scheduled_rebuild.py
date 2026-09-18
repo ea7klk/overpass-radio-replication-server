@@ -111,6 +111,8 @@ def run_until_current(
         command = [
             "pyosmium-up-to-date",
             "-vvv",
+            "--size",
+            "10000",
             "--server",
             server,
         ]

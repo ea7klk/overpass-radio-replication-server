@@ -33,6 +33,7 @@ minutely replication service and Pyosmium 4.3.1:
 
 ```bash
 pyosmium-up-to-date -vvv \
+  --size=10000 \
   --server https://planet.osm.org/replication/minute \
   --ignore-osmosis-headers \
   /srv/overpass-radio/planet/planet.osm.pbf
