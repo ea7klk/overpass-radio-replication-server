@@ -26,7 +26,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       containers:
       - name: overpass
-        image: ghcr.io/ea7klk/overpass-radio-overpass:0.1.19
+        image: ghcr.io/ea7klk/overpass-radio-overpass:0.1.21
         imagePullPolicy: IfNotPresent
         env:
         - name: ALLOWED_ORIGINS
@@ -64,7 +64,9 @@ spec:
             - /bin/sh
             - -c
             - >-
-              curl --noproxy '*' --fail --silent --get
+              slot=blue; case "$(cat /etc/hostname)" in *-1) slot=green;; esac;
+              active="$(cat /srv/overpass-radio/state/active-slot 2>/dev/null || true)";
+              test "$active" != "$slot" || curl --noproxy '*' --fail --silent --get
               http://127.0.0.1/api/interpreter
               --data-urlencode 'data=[out:json];node(1);out;' |
               grep -q '"version"'
@@ -78,7 +80,9 @@ spec:
             - /bin/sh
             - -c
             - >-
-              curl --noproxy '*' --fail --silent --get
+              slot=blue; case "$(cat /etc/hostname)" in *-1) slot=green;; esac;
+              active="$(cat /srv/overpass-radio/state/active-slot 2>/dev/null || true)";
+              test "$active" != "$slot" || curl --noproxy '*' --fail --silent --get
               http://127.0.0.1/api/interpreter
               --data-urlencode 'data=[out:json];node(1);out;' |
               grep -q '"version"'
@@ -136,7 +140,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       initContainers:
       - name: download-fresh-planet
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.20
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.21
         imagePullPolicy: IfNotPresent
         command: [/usr/local/bin/radio-overpass-planet-bootstrap]
         env:
@@ -146,7 +150,7 @@ spec:
         - name: planet
           mountPath: /srv/planet
       - name: initialize-filtered-staging
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.20
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.21
         imagePullPolicy: IfNotPresent
         command: [/usr/local/bin/radio-overpass-initial-staging]
         env:
@@ -173,7 +177,7 @@ spec:
           mountPath: /srv/state
       containers:
       - name: full-pbf-replication
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.20
+        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.21
         imagePullPolicy: IfNotPresent
         command: [/usr/local/bin/radio-overpass-full-pbf-entrypoint]
         env:

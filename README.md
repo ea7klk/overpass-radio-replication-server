@@ -48,6 +48,12 @@ database. No external Overpass query is needed: the full Planet PBF is the
 source of truth, and `osmium tags-filter` retains the referenced nodes, ways,
 and relation members needed by each matching object.
 
+The full-PBF apply gate is three hours (`batch_interval_seconds: 10800`). The
+Overpass API StatefulSet uses blue/green slots: the active slot is the only
+ready Service endpoint, while the inactive pod remains running but unready
+until its replacement database is ready. An inactive pod no longer exits after
+retiring its old database, preventing a false CrashLoopBackOff state.
+
 The replication worker writes a shared `building-slot` marker before
 replacing the inactive database. The standby API honors this marker and does
 not start or retire that slot until the import has published `ready-slot`.

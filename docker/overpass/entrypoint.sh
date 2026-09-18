@@ -143,7 +143,10 @@ retire_if_inactive() {
         rm -rf -- "$db_dir"
         printf 'Retired inactive Overpass %s slot database\n' "$slot"
     fi
-    exit 0
+    # Keep the standby container alive. StatefulSet restarts after a clean
+    # exit, which made an intentionally empty inactive slot appear as
+    # CrashLoopBackOff. The pod remains unready until this slot is published
+    # as ready and activated, and then starts its dispatcher/API normally.
 }
 
 cleanup() {
