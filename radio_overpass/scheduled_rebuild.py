@@ -101,6 +101,31 @@ def planet_replication_source(config: dict[str, Any]) -> str:
     return str(options.get("osmosis_replication_base_url", "")).rstrip("/")
 
 
+def save_minute_sequence_state(config: dict[str, Any]) -> None:
+    """Persist the current minute sequence as a restart checkpoint."""
+    state_value = config.get("minute_sequence_file")
+    if not state_value:
+        return
+    planet = path(config, "planet_pbf")
+    info = json.loads(
+        subprocess.check_output(
+            ["osmium", "fileinfo", "--json", "--no-crc", str(planet)],
+            text=True,
+        )
+    )
+    options = info.get("header", {}).get("option", {})
+    sequence = options.get("osmosis_replication_sequence_number")
+    if sequence is None:
+        LOG.warning("updated Planet PBF has no replication sequence to persist")
+        return
+    state_path = path(config, "minute_sequence_file")
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = state_path.with_name(f".{state_path.name}.tmp-{time.monotonic_ns()}")
+    temporary.write_text(f"{int(sequence)}\n", encoding="ascii")
+    temporary.replace(state_path)
+    LOG.info("saved minute replication sequence state: %s", sequence)
+
+
 def run_until_current(
     config: dict[str, Any], server: str, *, ignore_osmosis_headers: bool = False
 ) -> None:
@@ -124,9 +149,11 @@ def run_until_current(
             check=False,
         )
         if result.returncode == 0:
+            save_minute_sequence_state(config)
             LOG.info("pyosmium-up-to-date caught %s up to the current server state", planet)
             return
         if result.returncode == 1:
+            save_minute_sequence_state(config)
             LOG.info(
                 "pyosmium-up-to-date reports more update files are available for %s; "
                 "continuing normally",

@@ -48,6 +48,13 @@ handoff when the snapshot header does not yet identify the minute service;
 after that, the minute replication metadata written by Pyosmium is reused
 directly without rescanning the full Planet file.
 
+After every successful or partial update, the current minute sequence is also
+atomically saved as `state/minute.sequence.state` as a durable recovery
+checkpoint. Normal subsequent runs continue to use
+`pyosmium-up-to-date`; they resume from the replication metadata stored in the
+PBF, while the checkpoint provides an independent record of the last state
+written.
+
 After minutely replication is current, the job creates a fresh extract:
 
 ```bash

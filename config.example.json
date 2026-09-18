@@ -7,6 +7,7 @@
   "filtered_pbf": "/srv/overpass-radio/filtered/pota_filtered.osm.pbf",
   "db_root": "/srv/overpass-radio/db",
   "state_dir": "/srv/overpass-radio/state",
+  "minute_sequence_file": "/srv/overpass-radio/state/minute.sequence.state",
   "snapshot_metadata_file": "/srv/overpass-radio/state/snapshot-metadata.json",
   "active_slot_file": "/srv/overpass-radio/state/active-slot",
   "ready_slot_file": "/srv/overpass-radio/state/ready-slot",
