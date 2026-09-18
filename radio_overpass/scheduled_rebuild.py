@@ -128,7 +128,8 @@ def run_until_current(
             return
         if result.returncode == 1:
             LOG.info(
-                "pyosmium-up-to-date applied a partial batch for %s; continuing until current",
+                "pyosmium-up-to-date reports more update files are available for %s; "
+                "continuing normally",
                 server,
             )
             time.sleep(int(config.get("retry_seconds", 15)))

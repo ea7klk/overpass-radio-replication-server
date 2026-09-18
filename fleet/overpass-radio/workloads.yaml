@@ -143,7 +143,7 @@ spec:
             kubernetes.io/hostname: spainip-k3s
           initContainers:
           - name: initialize-or-refresh-planet
-            image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.25
+            image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.26
             imagePullPolicy: IfNotPresent
             command: [/usr/local/bin/radio-overpass-planet-bootstrap]
             env:
@@ -160,7 +160,7 @@ spec:
               mountPath: /srv/planet
           containers:
           - name: scheduled-rebuild
-            image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.25
+            image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.26
             imagePullPolicy: IfNotPresent
             command: [/usr/local/bin/radio-overpass-scheduled-rebuild]
             env:

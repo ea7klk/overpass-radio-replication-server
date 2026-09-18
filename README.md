@@ -39,8 +39,9 @@ pyosmium-up-to-date -vvv \
   /srv/overpass-radio/planet/planet.osm.pbf
 ```
 
-If Pyosmium returns `1` because more changes remain than fit in one batch, the
-CronJob repeats the command until the server is caught up. Pyosmium stores
+If Pyosmium returns `1`, that is treated as a normal “more update files are
+available” indication, not as a failed job. The CronJob repeats the command
+until the server is caught up. Pyosmium stores
 replication metadata in the PBF, allowing the next run to resume from the
 correct position. The explicit header override is used only for the initial
 handoff when the snapshot header does not yet identify the minute service;
