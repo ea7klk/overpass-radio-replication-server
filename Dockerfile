@@ -65,13 +65,15 @@ COPY docker/replicator/rebuild-entrypoint.sh /usr/local/bin/radio-overpass-rebui
 COPY docker/replicator/planet-bootstrap.sh /usr/local/bin/radio-overpass-planet-bootstrap
 COPY docker/replicator/initial-staging.sh /usr/local/bin/radio-overpass-initial-staging
 COPY docker/replicator/full-pbf-entrypoint.sh /usr/local/bin/radio-overpass-full-pbf-entrypoint
+COPY docker/replicator/scheduled-rebuild-entrypoint.sh /usr/local/bin/radio-overpass-scheduled-rebuild
 RUN chmod 755 /usr/local/bin/radio-overpass-entrypoint \
     && chmod 755 /usr/local/bin/radio-overpass-initial-import \
     && chmod 755 /usr/local/bin/radio-overpass-apply-minute \
     && chmod 755 /usr/local/bin/radio-overpass-rebuild-entrypoint \
     && chmod 755 /usr/local/bin/radio-overpass-planet-bootstrap \
     && chmod 755 /usr/local/bin/radio-overpass-initial-staging \
-    && chmod 755 /usr/local/bin/radio-overpass-full-pbf-entrypoint
+    && chmod 755 /usr/local/bin/radio-overpass-full-pbf-entrypoint \
+    && chmod 755 /usr/local/bin/radio-overpass-scheduled-rebuild
 
 ENV CONFIG_PATH=/etc/overpass-radio.json
 VOLUME ["/srv/overpass-radio"]

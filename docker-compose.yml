@@ -9,46 +9,19 @@ services:
     volumes:
       - planet:/srv/planet
 
-  initial-staging:
-    build:
-      context: .
-      target: replicator
-    image: ${REPLICATOR_IMAGE:-ghcr.io/ea7klk/overpass-radio-replicator:latest}
-    restart: "no"
-    command: [/usr/local/bin/radio-overpass-initial-staging]
-    depends_on:
-      planet-bootstrap:
-        condition: service_completed_successfully
-    environment:
-      PLANET_PBF: /srv/planet/planet-latest.osm.pbf
-      FILTERED_DIR: /srv/filtered
-      STAGING_DB_DIR: /srv/db/staging
-      STATE_DIR: /srv/state
-      TAG_KEY_PREFIX: communication:amateur_radio
-    volumes:
-      - planet:/srv/planet
-      - filtered:/srv/filtered
-      - databases:/srv/db
-      - state:/srv/state
-
   overpass:
     build:
       context: .
       target: overpass
     image: ${OVERPASS_IMAGE:-ghcr.io/ea7klk/overpass-radio-overpass:latest}
     restart: unless-stopped
-    depends_on:
-      initial-staging:
-        condition: service_completed_successfully
     environment:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       OVERPASS_DB_ROOT: /srv/overpass-radio/db
-      OVERPASS_LIVE_DB_DIR: /srv/overpass-radio/db/live
-      OVERPASS_STAGING_DB_DIR: /srv/overpass-radio/db/staging
       OVERPASS_STATE_DIR: /srv/overpass-radio/state
-      OVERPASS_STAGING_READY_FILE: /srv/overpass-radio/state/staging-ready
-      OVERPASS_CUTOVER_REQUESTED_FILE: /srv/overpass-radio/state/cutover-requested
-      OVERPASS_CUTOVER_COMPLETE_FILE: /srv/overpass-radio/state/cutover-complete
+      OVERPASS_READY_SLOT_FILE: /srv/overpass-radio/state/ready-slot
+      OVERPASS_ACTIVE_SLOT_FILE: /srv/overpass-radio/state/active-slot
+      OVERPASS_BUILDING_SLOT_FILE: /srv/overpass-radio/state/building-slot
     ports:
       - "${OVERPASS_PORT:-8080}:80"
     volumes:
@@ -65,21 +38,22 @@ services:
       retries: 10
       start_period: 30s
 
-  full-pbf-replication:
+  scheduled-rebuild:
     build:
       context: .
       target: replicator
     image: ${REPLICATOR_IMAGE:-ghcr.io/ea7klk/overpass-radio-replicator:latest}
-    restart: unless-stopped
-    command: [/usr/local/bin/radio-overpass-full-pbf-entrypoint]
+    restart: "no"
+    command: [/usr/local/bin/radio-overpass-scheduled-rebuild]
     depends_on:
+      planet-bootstrap:
+        condition: service_completed_successfully
       overpass:
-        condition: service_healthy
+        condition: service_started
     environment:
       CONFIG_PATH: /etc/overpass-radio.json
     volumes:
       - planet:/srv/overpass-radio/planet
-      - raw-changes:/srv/overpass-radio/raw
       - filtered:/srv/overpass-radio/filtered
       - databases:/srv/overpass-radio/db
       - state:/srv/overpass-radio/state
@@ -87,7 +61,6 @@ services:
 
 volumes:
   planet:
-  raw-changes:
   filtered:
   databases:
   state:

@@ -114,114 +114,92 @@ spec:
           name: overpass-radio-apache-cors
           defaultMode: 0444
 ---
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: batch/v1
+kind: CronJob
 metadata:
   name: overpass-radio-replication
   namespace: overpass-radio
   labels:
     app.kubernetes.io/name: overpass-radio-replication
 spec:
-  replicas: 1
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: overpass-radio-replication
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: overpass-radio-replication
+  schedule: "0 */4 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
     spec:
-      automountServiceAccountToken: false
-      imagePullSecrets:
-      - name: registry-credentials
-      nodeSelector:
-        kubernetes.io/hostname: spainip-k3s
-      initContainers:
-      - name: download-fresh-planet
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.21
-        imagePullPolicy: IfNotPresent
-        command: [/usr/local/bin/radio-overpass-planet-bootstrap]
-        env:
-        - name: PLANET_METADATA_FILE
-          value: /srv/planet/planet-download.json
-        volumeMounts:
-        - name: planet
-          mountPath: /srv/planet
-      - name: initialize-filtered-staging
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.21
-        imagePullPolicy: IfNotPresent
-        command: [/usr/local/bin/radio-overpass-initial-staging]
-        env:
-        - name: PLANET_PBF
-          value: /srv/planet/planet-latest.osm.pbf
-        - name: FILTERED_DIR
-          value: /srv/filtered
-        - name: STAGING_DB_DIR
-          value: /srv/db/blue
-        - name: INITIAL_SLOT
-          value: blue
-        - name: STATE_DIR
-          value: /srv/state
-        - name: TAG_KEY_PREFIX
-          value: communication:amateur_radio
-        volumeMounts:
-        - name: planet
-          mountPath: /srv/planet
-        - name: filtered
-          mountPath: /srv/filtered
-        - name: databases
-          mountPath: /srv/db
-        - name: state
-          mountPath: /srv/state
-      containers:
-      - name: full-pbf-replication
-        image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.21
-        imagePullPolicy: IfNotPresent
-        command: [/usr/local/bin/radio-overpass-full-pbf-entrypoint]
-        env:
-        - name: CONFIG_PATH
-          value: /etc/overpass-radio.json
-        resources:
-          requests:
-            cpu: 1
-            memory: 2Gi
-        volumeMounts:
-        - name: planet
-          mountPath: /srv/overpass-radio/planet
-        - name: raw-changes
-          mountPath: /srv/overpass-radio/raw
-        - name: filtered
-          mountPath: /srv/overpass-radio/filtered
-        - name: databases
-          mountPath: /srv/overpass-radio/db
-        - name: state
-          mountPath: /srv/overpass-radio/state
-        - name: config
-          mountPath: /etc/overpass-radio.json
-          subPath: overpass-radio.json
-          readOnly: true
-      volumes:
-      - name: planet
-        persistentVolumeClaim:
-          claimName: overpass-radio-planet
-      - name: raw-changes
-        persistentVolumeClaim:
-          claimName: overpass-radio-raw-changes
-      - name: filtered
-        persistentVolumeClaim:
-          claimName: overpass-radio-filtered
-      - name: databases
-        persistentVolumeClaim:
-          claimName: overpass-radio-databases
-      - name: state
-        persistentVolumeClaim:
-          claimName: overpass-radio-state
-      - name: config
-        configMap:
-          name: overpass-radio-config
-          defaultMode: 0444
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: overpass-radio-replication
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          imagePullSecrets:
+          - name: registry-credentials
+          nodeSelector:
+            kubernetes.io/hostname: spainip-k3s
+          initContainers:
+          - name: initialize-or-refresh-planet
+            image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.22
+            imagePullPolicy: IfNotPresent
+            command: [/usr/local/bin/radio-overpass-planet-bootstrap]
+            env:
+            - name: PLANET_DIR
+              value: /srv/planet
+            - name: PLANET_PBF
+              value: /srv/planet/planet.osm.pbf
+            - name: PLANET_METADATA_FILE
+              value: /srv/planet/planet-download.json
+            - name: PLANET_INITIALIZED_FILE
+              value: /srv/planet/planet-initialized
+            volumeMounts:
+            - name: planet
+              mountPath: /srv/planet
+          containers:
+          - name: scheduled-rebuild
+            image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.22
+            imagePullPolicy: IfNotPresent
+            command: [/usr/local/bin/radio-overpass-scheduled-rebuild]
+            env:
+            - name: CONFIG_PATH
+              value: /etc/overpass-radio.json
+            resources:
+              requests:
+                cpu: 1
+                memory: 2Gi
+            volumeMounts:
+            - name: planet
+              mountPath: /srv/overpass-radio/planet
+            - name: filtered
+              mountPath: /srv/overpass-radio/filtered
+            - name: databases
+              mountPath: /srv/overpass-radio/db
+            - name: state
+              mountPath: /srv/overpass-radio/state
+            - name: config
+              mountPath: /etc/overpass-radio.json
+              subPath: overpass-radio.json
+              readOnly: true
+          volumes:
+          - name: planet
+            persistentVolumeClaim:
+              claimName: overpass-radio-planet
+          - name: filtered
+            persistentVolumeClaim:
+              claimName: overpass-radio-filtered
+          - name: databases
+            persistentVolumeClaim:
+              claimName: overpass-radio-databases
+          - name: state
+            persistentVolumeClaim:
+              claimName: overpass-radio-state
+          - name: config
+            configMap:
+              name: overpass-radio-config
+              defaultMode: 0444
 ---
 apiVersion: v1
 kind: Service

@@ -1,155 +1,119 @@
-# Filtered Overpass replication for `communication:amateur_radio*`
+# Filtered Overpass rebuild for `communication:amateur_radio*`
 
-This repository maintains an Overpass database containing only objects with a
-`communication:amateur_radio*` tag and the referenced OSM dependencies needed
-to represent those objects. The initial Planet file is downloaded and kept
-under the pipeline's control; no host `hostPath` PBF is used.
-Only current OSM objects are imported: all database imports use `--meta=no`
-and no attic or historical data is requested.
+This repository maintains an Overpass database containing only current OSM
+objects with a `communication:amateur_radio*` tag and the referenced nodes,
+ways, and relation members needed to represent them. Imports use
+`--meta=no`; attic and historical data are not retained.
 
-## Runtime design
+## Scheduled pipeline
 
-The Fleet deployment uses one blue/green Overpass StatefulSet (two API/
-dispatcher pods) and one `full-pbf-replication` worker Deployment. The worker uses a fresh
-`planet-latest.osm.pbf.torrent`, resumes the PBF download with `aria2c`, and
-keeps that full PBF as its source of truth.
-The replicator image installs the Debian `aria2` package and verifies that
-`aria2c` is available during the image build.
+The pipeline runs as the `overpass-radio-replication` Kubernetes CronJob at
+`0 */4 * * *`. `concurrencyPolicy: Forbid` prevents overlapping full rebuilds.
+The active Overpass API remains available while the next database is built.
 
-The Planet bootstrap records the torrent SHA-256, the original payload
-filename, download size, current payload size, and PBF replication timestamp
-in `planet-download.json`. If the torrent, payload filename, and current
-recorded file size are unchanged, the existing PBF is reused. If a newer
-torrent points to another payload, the new file is downloaded into the same
-controlled PVC while the previous payload remains available. Only after the
-new file is complete is the stable `planet-latest.osm.pbf` symlink atomically
-refreshed and the old payload removed. After each `osmium apply-changes`, the
-updated payload replaces the previous payload in place and the current size is
-recorded. This keeps one full Planet payload on disk rather than accumulating
-old versions.
+The first CronJob execution performs the one-time initialization:
 
-The worker processes replication in order: daily, hourly, then minutely. Each
-raw `.osc.gz` file is first scanned for a
-`communication:amateur_radio*` tag. Rejected files are logged and deleted.
-Up to ten contiguous files are prefetched concurrently. The worker waits for
-the one-hour batch window to be due, but while that gate is active it keeps
-polling the minute replication endpoint every `poll_seconds`, downloading and
-prefiltering each newly available window. Those minute files remain queued and
-are never applied out of order. Once the gate opens, the worker merges and
-applies the batch in one full-PBF rewrite, even if the backlog is still
-growing. Every file is still
-applied to the full Planet PBF so the source of truth stays complete. For
-hourly batches, minute downloads and prefiltering continue while the hourly
-apply gate is waiting; the worker logs each remote scan and each prefetched
-window. For accepted files, `osmium
-tags-filter` creates a new filtered PBF;
-that PBF is extracted to XML and imported into an isolated staging Overpass
-database. No external Overpass query is needed: the full Planet PBF is the
-source of truth, and `osmium tags-filter` retains the referenced nodes, ways,
-and relation members needed by each matching object.
+1. If `planet-initialized` is absent, existing `.osm.pbf` files on the Planet
+   PVC are removed.
+2. The latest Planet torrent is downloaded with `aria2c` and the completed
+   payload is stored as `/srv/overpass-radio/planet/planet.osm.pbf`.
+3. `planet-download.json` records the original payload filename, torrent hash,
+   file size, replication timestamp, and replication sequence. The
+   `planet-initialized` marker prevents the destructive initialization from
+   happening again.
 
-The full-PBF apply gate is three hours (`batch_interval_seconds: 10800`). The
-Overpass API StatefulSet uses blue/green slots: the active slot is the only
-ready Service endpoint, while the inactive pod remains running but unready
-until its replacement database is ready. An inactive pod no longer exits after
-retiring its old database, preventing a false CrashLoopBackOff state.
+Every later run checks the latest torrent. An unchanged torrent and payload
+are reused. A newer torrent is downloaded into an incoming directory and
+atomically moved into place only after completion. The old PBF is removed
+after the replacement is ready. Metadata is refreshed after every local
+Pyosmium update so a changed file is not downloaded again unnecessarily.
 
-The replication worker writes a shared `building-slot` marker before
-replacing the inactive database. The standby API honors this marker and does
-not start or retire that slot until the import has published `ready-slot`.
-This prevents the API process from deleting a partially initialized database
-while Overpass `update_database` is still writing files such as
-`nodes.bin`.
-
-If the controlled Planet payload changes, the worker treats it as a new source
-snapshot: it filters and imports that PBF into the inactive slot, waits for the
-replacement to be healthy, and resets the daily replication boundary to the
-new PBF timestamp. It does not replay changes already represented by the new
-snapshot. If the full-PBF step completed but the replacement import was interrupted,
-the worker detects the matching `filtered-<cadence>-<first>-<last>.osm.pbf`
-artifact and resumes from that file. It advances replication state only after
-the replacement import succeeds, so it does not repeat the full-PBF update.
-The full-PBF writer also keeps an atomic apply journal: an interrupted
-temporary output is discarded, while a completed output is committed without
-reapplying its OSC files. The filtered-import checkpoint similarly prevents a
-completed staging import from being repeated after a restart.
-
-When a replacement slot is ready, a second Overpass dispatcher/API instance
-serves it and passes a local health check before the active slot marker is
-switched. Traefik's Service then routes only to the healthy active slot, so the
-old API remains available during the handoff. The retired slot is removed only
-after its dispatcher has stopped. Files without matching tags do not trigger a
-filtered rebuild or slot switch.
-
-Each API container checks the container-local dispatcher socket before startup.
-If no dispatcher process in that container owns the socket, it removes the
-stale socket left by a previous container instance; an in-use socket is left
-untouched. This prevents a pod restart from entering a dispatcher crash loop.
-
-`osmium tags-filter` retains referenced nodes and relation members by default;
-do not pass `--omit-referenced`/`-R`. The explicit CLI used for the initial
-extract is:
+Each run then catches the full PBF up to the current state using Pyosmium
+4.3.1:
 
 ```bash
-osmium tags-filter planet-latest.osm.pbf \
-  'communication:amateur_radio*' \
-  -o initial.osm.pbf --progress --overwrite --verbose
+pyosmium-up-to-date -vvv \
+  --server https://planet.osm.org/replication/hour \
+  /srv/overpass-radio/planet/planet.osm.pbf
+
+pyosmium-up-to-date -vvv \
+  --server https://planet.osm.org/replication/minute \
+  /srv/overpass-radio/planet/planet.osm.pbf
 ```
 
-## Timing and progress logs
+If Pyosmium returns `1` because more changes remain than fit in one batch, the
+CronJob repeats that cadence until the server is caught up. Pyosmium stores
+replication metadata in the PBF, allowing the next run to resume from the
+correct position.
 
-The init containers and worker log elapsed seconds for:
+After both replication sources are current, the job creates a fresh extract:
 
-- Planet torrent/PBF download;
-- `osmium tags-filter` filtering;
-- filtered PBF to XML extraction;
-- staging Overpass database import; and
-- replication downloads and full-PBF `osmium apply-changes`.
+```bash
+osmium tags-filter planet.osm.pbf \
+  'communication:amateur_radio*' \
+  -o pota_filtered.osm.pbf \
+  --progress --overwrite --verbose
+```
 
-Initial and staging imports additionally log every 5,000 OSM objects received,
-followed by a final object count. Typical messages include
-`radio tags-filter ... completed in`, `extracted filtered PBF ... in`,
-`staging Overpass import ... completed in`, and
-`Overpass DB import processed at least 5000 OSM objects`.
+The command intentionally does not use `--omit-referenced`/`-R`, so referenced
+nodes and relation members are retained. The extract is imported into the
+inactive blue/green Overpass database slot. The active slot keeps serving until
+the replacement is ready and passes the existing readiness-gated cutover.
+
+## Blue/green cutover
+
+The Overpass StatefulSet has two fixed slots: pod `-0` is blue and pod `-1` is
+green. Only the slot named by `active-slot` is ready in the Service. The
+inactive pod remains alive but unready while its database is absent or being
+rebuilt; it must not enter `CrashLoopBackOff` merely because it is a standby.
+
+The scheduled job writes `building-slot` before deleting and recreating the
+inactive database, then publishes `ready-slot`. The standby API starts its
+dispatcher and Apache, verifies a local query, and atomically changes
+`active-slot`. The previous active pod then retires its old database. Apache
+and dispatcher stale-socket cleanup remains enabled.
+
+## Progress logging
+
+The CronJob logs elapsed time and progress for:
+
+- torrent/PBF download and replacement;
+- hourly and minutely Pyosmium catch-up;
+- full-planet tag filtering;
+- PBF-to-XML extraction; and
+- staging Overpass database import, including progress every 5,000 OSM
+  objects.
+
+Useful commands:
+
+```bash
+kubectl -n overpass-radio get cronjob,jobs,pods,pvc
+kubectl -n overpass-radio logs job/<job-name> -f -c scheduled-rebuild
+kubectl -n overpass-radio exec overpass-radio-overpass-0 -- \
+  cat /srv/overpass-radio/state/active-slot
+kubectl -n overpass-radio exec overpass-radio-overpass-0 -- \
+  cat /srv/overpass-radio/planet/planet-download.json
+```
+
+The API is exposed through Traefik at
+`https://overpass.ea7klk.es`. Apache access and error logs are emitted to
+container stdout/stderr.
 
 ## Persistent volumes
 
-The five claims in `fleet/overpass-radio/storage.yaml` have separate purposes:
-
 | PVC | Purpose |
 | --- | --- |
-| `overpass-radio-planet` | Full Planet PBF and torrent, the controlled source of truth |
-| `overpass-radio-raw-changes` | Temporary raw daily/hourly/minute downloads |
-| `overpass-radio-filtered` | Filtered PBF extracts and temporary XML |
+| `overpass-radio-planet` | Controlled full Planet PBF, torrent, metadata, and initialization marker |
+| `overpass-radio-raw-changes` | Legacy raw-change storage retained for compatibility; unused by the scheduled pipeline |
+| `overpass-radio-filtered` | Current filtered PBF extract and temporary XML |
 | `overpass-radio-databases` | Blue/green filtered Overpass database slots |
-| `overpass-radio-state` | Replication checkpoints, metadata, work, and cutover markers |
+| `overpass-radio-state` | Cutover markers, metadata, and import coordination |
 
-The architecture and storage diagrams are in
+Architecture and storage diagrams are in
 [`docs/architecture.puml`](docs/architecture.puml) and
-[`docs/storage.puml`](docs/storage.puml). Both contain only standard syntax and
+[`docs/storage.puml`](docs/storage.puml). Both use standard PlantUML syntax and
 are renderable by the public PlantUML server; see
 [`docs/plantuml.md`](docs/plantuml.md).
-
-## Fleet deployment
-
-The API is exposed through Traefik at
-`https://overpass.ea7klk.es`. The service remains unready while the fresh
-Planet file is downloading or the initial filtered staging database is being
-imported, then becomes ready after the first cutover.
-Apache access and error logs are emitted to the container stdout/stderr, so
-they are available with `kubectl logs` and in Rancher rather than only in the
-container's ephemeral `/var/log/apache2` directory.
-
-Useful checks:
-
-```bash
-kubectl -n overpass-radio get pods,pvc
-kubectl -n overpass-radio logs deployment/overpass-radio-replication \
-  -c full-pbf-replication -f
-kubectl -n overpass-radio logs deployment/overpass-radio-overpass -f
-kubectl -n overpass-radio exec deployment/overpass-radio-replication \
-  -c full-pbf-replication -- cat /srv/overpass-radio/state/replication-state.json
-```
 
 ## Validation
 
@@ -160,45 +124,7 @@ bash -n docker/overpass/entrypoint.sh docker/replicator/*.sh
 docker compose config --quiet
 ```
 
-Pushing a semantic-version tag runs tests and publishes the replicator image
-to GHCR. The Overpass and replicator images are released together because the
-database cutover protocol is shared between them. The image uses the recent
-prebuilt `wiktorn/overpass-api:v0.7.62.11` binary distribution as a build
-stage, so the osm-3s compiler stage is no longer run for every release. The
-image remains wrapped in this repository's Debian/Apache image so the custom
-cutover entrypoint and Traefik-facing API layout are preserved.
-The redesigned pipeline begins at release `v0.1.0`; subsequent redesigned
-releases should increment from that version.
-The torrent payload name is discovered from the torrent metadata (for example,
-`planet-260907.osm.pbf`) and is resumed in place. A stable
-`planet-latest.osm.pbf` symlink points to that controlled payload for the
-filtering and replication workers. The bootstrap does not switch that symlink
-while a new payload is incomplete, and the worker never applies replication
-files to a newly downloaded Planet payload before resetting to its timestamp
-boundary.
-
-## Safe replication-worker restarts
-
-Do not roll or recreate the `full-pbf-replication` pod while it has pending
-replication work. Kubernetes reruns the init containers whenever the pod is
-recreated, so an unnecessary rollout can repeat the expensive initial filter
-and staging import. Before a planned restart, wait until the daily/hourly/
-minute stream has caught up and confirm both conditions below:
-
-1. The state PVC contains `accepted-prefilter`, written only after a file logs
-   `accepted tag prefilter: matching communication:amateur_radio*`.
-2. The raw-change PVC contains no pending `.osc.gz` or `.part` files under
-   `/srv/overpass-radio/raw/day`, `/srv/overpass-radio/raw/hour`, or
-   `/srv/overpass-radio/raw/minute`.
-
-Example checks:
-
-```bash
-kubectl -n overpass-radio exec deployment/overpass-radio-replication \
-  -c full-pbf-replication -- test -s /srv/overpass-radio/state/accepted-prefilter
-kubectl -n overpass-radio exec deployment/overpass-radio-replication \
-  -c full-pbf-replication -- sh -c \
-  'find /srv/overpass-radio/raw -type f \( -name "*.osc.gz" -o -name "*.part" \) -print'
-```
-
-The second command must produce no output before the restart is authorized.
+Pushing a semantic-version tag runs tests and publishes the replicator and
+Overpass images to GHCR. The image uses the prebuilt
+`wiktorn/overpass-api:v0.7.62.11` binary distribution and installs
+`osmium-tool`, `aria2`, and Pyosmium `4.3.1`.
