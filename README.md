@@ -38,13 +38,16 @@ pyosmium-up-to-date -vvv \
 
 pyosmium-up-to-date -vvv \
   --server https://planet.osm.org/replication/minute \
+  --ignore-osmosis-headers \
   /srv/overpass-radio/planet/planet.osm.pbf
 ```
 
 If Pyosmium returns `1` because more changes remain than fit in one batch, the
 CronJob repeats that cadence until the server is caught up. Pyosmium stores
 replication metadata in the PBF, allowing the next run to resume from the
-correct position.
+correct position. The minute command explicitly overrides the embedded hourly
+replication URL because the same PBF is intentionally advanced across those
+two replication services in one run.
 
 After both replication sources are current, the job creates a fresh extract:
 

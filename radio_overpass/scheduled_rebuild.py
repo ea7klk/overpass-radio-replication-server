@@ -88,19 +88,24 @@ def update_planet_metadata(config: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
-def run_until_current(config: dict[str, Any], server: str) -> None:
+def run_until_current(
+    config: dict[str, Any], server: str, *, ignore_osmosis_headers: bool = False
+) -> None:
     """Run the requested command until pyosmium reports no remaining data."""
     planet = path(config, "planet_pbf")
     while True:
         LOG.info("running pyosmium-up-to-date against %s", server)
+        command = [
+            "pyosmium-up-to-date",
+            "-vvv",
+            "--server",
+            server,
+        ]
+        if ignore_osmosis_headers:
+            command.append("--ignore-osmosis-headers")
+        command.append(str(planet))
         result = subprocess.run(
-            [
-                "pyosmium-up-to-date",
-                "-vvv",
-                "--server",
-                server,
-                str(planet),
-            ],
+            command,
             check=False,
         )
         if result.returncode == 0:
@@ -184,7 +189,14 @@ def run(config: dict[str, Any]) -> None:
         raise RuntimeError(f"Planet PBF is missing: {planet}")
 
     run_until_current(config, str(config["hour_base_url"]))
-    run_until_current(config, str(config["minute_base_url"]))
+    # The hourly command leaves its replication URL in the PBF header. The
+    # minute service is the intended next cadence, but Pyosmium requires an
+    # explicit override when switching replication servers in one run.
+    run_until_current(
+        config,
+        str(config["minute_base_url"]),
+        ignore_osmosis_headers=True,
+    )
     metadata = update_planet_metadata(config)
     filtered = extract_filtered(config)
 

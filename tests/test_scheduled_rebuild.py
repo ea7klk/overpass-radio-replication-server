@@ -32,6 +32,7 @@ class ScheduledRebuildTest(unittest.TestCase):
 
             self.assertEqual(len(calls), 3)
             self.assertEqual(calls[0][-1], str(planet))
+            self.assertNotIn("--ignore-osmosis-headers", calls[0])
             self.assertEqual(sleep.call_count, 2)
 
     def test_fails_on_unrecoverable_pyosmium_exit(self):
@@ -49,6 +50,29 @@ class ScheduledRebuildTest(unittest.TestCase):
             ):
                 with self.assertRaises(subprocess.CalledProcessError):
                     run_until_current({"planet_pbf": str(planet)}, "https://example.test")
+
+    def test_can_switch_replication_server_with_header_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            planet = Path(directory) / "planet.osm.pbf"
+            planet.write_bytes(b"pbf")
+
+            class Result:
+                returncode = 0
+                args = ["pyosmium-up-to-date"]
+
+            with patch(
+                "radio_overpass.scheduled_rebuild.subprocess.run",
+                return_value=Result(),
+            ) as run_command:
+                run_until_current(
+                    {"planet_pbf": str(planet)},
+                    "https://planet.osm.org/replication/minute",
+                    ignore_osmosis_headers=True,
+                )
+
+            self.assertIn(
+                "--ignore-osmosis-headers", run_command.call_args.args[0]
+            )
 
 
 if __name__ == "__main__":
