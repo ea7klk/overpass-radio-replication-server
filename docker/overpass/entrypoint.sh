@@ -68,11 +68,34 @@ start_dispatcher() {
 stop_dispatcher() {
     [[ -z "$dispatcher_pid" ]] && return 0
     if kill -0 "$dispatcher_pid" 2>/dev/null; then
-        /opt/overpass/bin/dispatcher --terminate --db-dir="$db_dir" >/dev/null 2>&1 || true
-        for _ in {1..120}; do
+        # Do not let a wedged dispatcher-control command block the entrypoint
+        # forever. This is only used for a standby slot during cutover; the
+        # active slot remains served by the other pod.
+        /opt/overpass/bin/dispatcher --terminate --db-dir="$db_dir" >/dev/null 2>&1 &
+        terminate_pid=$!
+        for _ in {1..15}; do
+            kill -0 "$dispatcher_pid" 2>/dev/null || break
+            kill -0 "$terminate_pid" 2>/dev/null || break
+            sleep 1
+        done
+        kill "$terminate_pid" 2>/dev/null || true
+        wait "$terminate_pid" 2>/dev/null || true
+        for _ in {1..15}; do
             kill -0 "$dispatcher_pid" 2>/dev/null || break
             sleep 1
         done
+        if kill -0 "$dispatcher_pid" 2>/dev/null; then
+            printf 'Dispatcher did not terminate cleanly; sending TERM to pid %s\n' "$dispatcher_pid"
+            kill -TERM "$dispatcher_pid" 2>/dev/null || true
+            for _ in {1..5}; do
+                kill -0 "$dispatcher_pid" 2>/dev/null || break
+                sleep 1
+            done
+        fi
+        if kill -0 "$dispatcher_pid" 2>/dev/null; then
+            printf 'Dispatcher still running; sending KILL to pid %s\n' "$dispatcher_pid"
+            kill -KILL "$dispatcher_pid" 2>/dev/null || true
+        fi
     fi
     wait "$dispatcher_pid" 2>/dev/null || true
     dispatcher_pid=''
@@ -117,7 +140,8 @@ slot_is_servable() {
     [[ "$db_dir" == "$db_root/live" ]] && return 0
     active_slot="$(active_slot)"
     [[ "$active_slot" == "$slot" ]] && return 0
-    [[ "$(tr -d '[:space:]' < "$ready_slot_file" 2>/dev/null || true)" == "$slot" ]]
+    [[ -f "$ready_slot_file" ]] || return 1
+    [[ "$(tr -d '[:space:]' < "$ready_slot_file")" == "$slot" ]]
 }
 
 stop_for_rebuild() {
