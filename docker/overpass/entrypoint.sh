@@ -109,10 +109,28 @@ building_slot() {
 }
 
 slot_is_servable() {
+    # A replacement importer owns this slot while it is rebuilding the
+    # database.  Do not start a dispatcher against files that are being
+    # removed/recreated, even if ready-slot still contains this slot from the
+    # previous generation.
+    [[ "$(building_slot)" == "$slot" ]] && return 1
     [[ "$db_dir" == "$db_root/live" ]] && return 0
     active_slot="$(active_slot)"
     [[ "$active_slot" == "$slot" ]] && return 0
     [[ "$(tr -d '[:space:]' < "$ready_slot_file" 2>/dev/null || true)" == "$slot" ]]
+}
+
+stop_for_rebuild() {
+    [[ "$(building_slot)" == "$slot" ]] || return 0
+    # The active slot must remain available while a replacement is built.  A
+    # building marker for the active slot is unexpected, so leave it alone in
+    # that case rather than creating an avoidable outage.
+    [[ "$(active_slot)" == "$slot" ]] && return 0
+    if [[ -n "$apache_pid" || -n "$dispatcher_pid" ]]; then
+        printf 'Stopping standby %s API before its database is rebuilt\n' "$slot"
+        stop_apache
+        stop_dispatcher
+    fi
 }
 
 activate_if_ready() {
@@ -143,10 +161,9 @@ retire_if_inactive() {
         rm -rf -- "$db_dir"
         printf 'Retired inactive Overpass %s slot database\n' "$slot"
     fi
-    # Keep the standby container alive. StatefulSet restarts after a clean
-    # exit, which made an intentionally empty inactive slot appear as
-    # CrashLoopBackOff. The pod remains unready until this slot is published
-    # as ready and activated, and then starts its dispatcher/API normally.
+    # Keep the standby container alive. The pod remains unready until this
+    # slot is published as ready and activated, and then starts its
+    # dispatcher/API normally.
 }
 
 cleanup() {
@@ -165,6 +182,7 @@ else
 fi
 
 while true; do
+    stop_for_rebuild
     retire_if_inactive
     if [[ -z "$apache_pid" && -f "$db_dir/nodes.map" ]] && slot_is_servable; then
         start_dispatcher

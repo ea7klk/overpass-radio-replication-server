@@ -624,10 +624,14 @@ def import_filtered_pbf(
                     "slot": slot,
                 },
             )
-        write_marker(config, "ready_slot_file", slot)
-        LOG.info("replacement database is ready in slot %s", slot)
     finally:
         clear_marker(config, "building_slot_file")
+    # Publish readiness only after building-slot has been cleared.  This
+    # prevents the standby pod from racing the final import cleanup and makes
+    # its dispatcher lifecycle unambiguous: it can start only on a complete,
+    # immutable database generation.
+    write_marker(config, "ready_slot_file", slot)
+    LOG.info("replacement database is ready in slot %s", slot)
 
 
 def rebuild_filtered(

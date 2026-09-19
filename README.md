@@ -71,8 +71,10 @@ the replacement is ready and passes the existing readiness-gated cutover.
 
 ## Blue/green cutover
 
-The Overpass StatefulSet has two fixed slots: pod `-0` is blue and pod `-1` is
-green. Only the slot named by `active-slot` is ready in the Service. The
+The API runs as two separately named Deployments, `overpass-radio-overpass-blue`
+and `overpass-radio-overpass-green`, with an explicit `OVERPASS_SLOT` value.
+This avoids relying on StatefulSet ordinal names (`-0`/`-1`) to identify the
+database. Only the slot named by `active-slot` is ready in the Service. The
 inactive pod remains alive but unready while its database is absent or being
 rebuilt; it must not enter `CrashLoopBackOff` merely because it is a standby.
 
@@ -98,9 +100,9 @@ Useful commands:
 ```bash
 kubectl -n overpass-radio get cronjob,jobs,pods,pvc
 kubectl -n overpass-radio logs job/<job-name> -f -c scheduled-rebuild
-kubectl -n overpass-radio exec overpass-radio-overpass-0 -- \
+kubectl -n overpass-radio exec deploy/overpass-radio-overpass-blue -- \
   cat /srv/overpass-radio/state/active-slot
-kubectl -n overpass-radio exec overpass-radio-overpass-0 -- \
+kubectl -n overpass-radio exec deploy/overpass-radio-overpass-blue -- \
   cat /srv/overpass-radio/planet/planet-download.json
 ```
 
