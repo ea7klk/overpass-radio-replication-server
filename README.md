@@ -118,7 +118,6 @@ leaving binary and already-compressed responses untouched.
 | PVC | Purpose |
 | --- | --- |
 | `overpass-radio-planet` | Controlled full Planet PBF, torrent, metadata, and initialization marker |
-| `overpass-radio-raw-changes` | Legacy raw-change storage retained for compatibility; unused by the scheduled pipeline |
 | `overpass-radio-filtered` | Current filtered PBF extract and temporary XML |
 | `overpass-radio-databases` | Blue/green filtered Overpass database slots |
 | `overpass-radio-state` | Cutover markers, metadata, and import coordination |

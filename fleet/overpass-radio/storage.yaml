@@ -18,23 +18,6 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: overpass-radio-raw-changes
-  namespace: overpass-radio
-  labels:
-    app.kubernetes.io/component: raw-replication
-  annotations:
-    overpass.spainip.es/purpose: raw-global-osc-replication-files
-spec:
-  accessModes: [ReadWriteOnce]
-  resources:
-    requests:
-      storage: 50Gi
-  storageClassName: local-path
-  volumeMode: Filesystem
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
   name: overpass-radio-filtered
   namespace: overpass-radio
   labels:
