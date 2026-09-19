@@ -266,6 +266,11 @@ spec:
             image: ghcr.io/ea7klk/overpass-radio-replicator:0.1.27
             imagePullPolicy: IfNotPresent
             command: [/usr/local/bin/radio-overpass-planet-bootstrap]
+            resources:
+              limits:
+                cpu: "6"
+              requests:
+                cpu: 100m
             env:
             - name: PLANET_DIR
               value: /srv/planet
@@ -290,6 +295,8 @@ spec:
               requests:
                 cpu: 1
                 memory: 2Gi
+              limits:
+                cpu: "6"
             volumeMounts:
             - name: planet
               mountPath: /srv/overpass-radio/planet
