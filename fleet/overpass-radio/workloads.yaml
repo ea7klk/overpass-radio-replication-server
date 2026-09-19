@@ -27,7 +27,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       containers:
       - name: overpass
-        image: ghcr.io/ea7klk/overpass-radio-overpass:0.1.29
+        image: ghcr.io/ea7klk/overpass-radio-overpass:0.1.30
         imagePullPolicy: IfNotPresent
         env:
         - name: OVERPASS_SLOT
@@ -146,7 +146,7 @@ spec:
         kubernetes.io/hostname: spainip-k3s
       containers:
       - name: overpass
-        image: ghcr.io/ea7klk/overpass-radio-overpass:0.1.29
+        image: ghcr.io/ea7klk/overpass-radio-overpass:0.1.30
         imagePullPolicy: IfNotPresent
         env:
         - name: OVERPASS_SLOT

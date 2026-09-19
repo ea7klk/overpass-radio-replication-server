@@ -3,6 +3,29 @@
 FROM wiktorn/overpass-api:v0.7.62.11 AS overpass-prebuilt
 
 
+FROM debian:bookworm-slim AS apache-brotli-module
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       apache2-dev ca-certificates curl libbrotli-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/mod-brotli
+RUN curl --fail --location --silent --show-error \
+       https://raw.githubusercontent.com/apache/httpd/2.4.x/modules/filters/mod_brotli.c \
+       --output mod_brotli.c \
+    && apxs -c \
+       -I/usr/include/brotli \
+       -l brotlienc \
+       -l brotlidec \
+       -l brotlicommon \
+       mod_brotli.c \
+    && mkdir -p /out \
+    && cp .libs/mod_brotli.so /out/mod_brotli.so
+
+
 FROM debian:bookworm-slim AS overpass-runtime
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -11,7 +34,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        bash ca-certificates curl gzip grep \
        libbz2-1.0 libexpat1 libgcc-s1 liblz4-1 liblzma5 \
-       libstdc++6 zlib1g \
+       libstdc++6 libbrotli1 zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=overpass-prebuilt /app /opt/overpass
@@ -23,9 +46,12 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends apache2 \
-    && a2enmod cgi env headers \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=apache-brotli-module /out/mod_brotli.so /usr/lib/apache2/modules/mod_brotli.so
+RUN printf '%s\n' 'LoadModule brotli_module /usr/lib/apache2/modules/mod_brotli.so' \
+       > /etc/apache2/mods-available/brotli.load \
+    && a2enmod brotli cgi deflate env filter headers
 COPY docker/overpass/apache.conf /etc/apache2/conf-available/overpass-radio.conf
 COPY docker/overpass/000-default.conf /etc/apache2/sites-available/000-default.conf
 COPY docker/overpass/entrypoint.sh /usr/local/bin/overpass-radio-entrypoint

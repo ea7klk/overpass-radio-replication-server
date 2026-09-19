@@ -108,7 +108,10 @@ kubectl -n overpass-radio exec deploy/overpass-radio-overpass-blue -- \
 
 The API is exposed through Traefik at
 `https://overpass.ea7klk.es`. Apache access and error logs are emitted to
-container stdout/stderr.
+container stdout/stderr. Text responses from the API are compressed with Brotli
+quality 4 when the client supports it, with gzip level 6 as the fallback. The
+configuration covers JSON, XML, GeoJSON, JavaScript, HTML, and plain text while
+leaving binary and already-compressed responses untouched.
 
 ## Persistent volumes
 
